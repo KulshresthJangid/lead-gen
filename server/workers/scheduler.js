@@ -68,11 +68,26 @@ export async function runPipeline(triggeredBy = 'scheduler') {
       logger.error({ runId, err }, '[PIPELINE] Dedup failed');
     }
 
-    // Step 3: Enrich (first pass)
-    logger.info({ runId }, '[PIPELINE] Step 3: Enriching (first pass)');
-    let enriched = unique;
+    // Step 3: Insert leads immediately so they appear in the UI right away
+    logger.info({ runId }, '[PIPELINE] Step 3: Inserting leads');
+    let inserted = [];
     try {
-      enriched = await enrichBatch(unique, config, ioInstance);
+      inserted = await db.insertLeads(unique);
+      stats.inserted = inserted.length;
+      logger.info({ runId, inserted: inserted.length }, '[PIPELINE] Insertion complete');
+      if (inserted.length > 0) {
+        ioInstance?.emit('new_leads', { count: inserted.length, runId });
+      }
+    } catch (err) {
+      errors.push(`DB insert: ${err.message}`);
+      logger.error({ runId, err }, '[PIPELINE] DB insertion failed');
+    }
+
+    // Step 4: Enrich inserted leads in background (Mistral can be slow)
+    logger.info({ runId }, '[PIPELINE] Step 4: Enriching leads');
+    let enriched = inserted;
+    try {
+      enriched = await enrichBatch(inserted, config, ioInstance);
       stats.enriched = enriched.filter((l) => l.enriched_at).length;
       logger.info({ runId, enriched: stats.enriched }, '[PIPELINE] Enrichment complete');
     } catch (err) {
@@ -80,8 +95,8 @@ export async function runPipeline(triggeredBy = 'scheduler') {
       logger.error({ runId, err }, '[PIPELINE] Enrichment failed');
     }
 
-    // Step 4: Refine outreach (second pass)
-    logger.info({ runId }, '[PIPELINE] Step 4: Refining outreach');
+    // Step 5: Refine outreach and update enriched fields in DB
+    logger.info({ runId }, '[PIPELINE] Step 5: Refining outreach');
     let refined = enriched;
     try {
       refined = await refineOutreach(enriched, config);
@@ -91,16 +106,24 @@ export async function runPipeline(triggeredBy = 'scheduler') {
       logger.error({ runId, err }, '[PIPELINE] Refinement failed');
     }
 
-    // Step 5: Insert leads
-    logger.info({ runId }, '[PIPELINE] Step 5: Inserting leads');
-    let inserted = [];
+    // Step 6: Update enriched fields in DB
+    logger.info({ runId }, '[PIPELINE] Step 6: Updating enrichment in DB');
     try {
-      inserted = await db.insertLeads(refined);
-      stats.inserted = inserted.length;
-      logger.info({ runId, inserted: inserted.length }, '[PIPELINE] Insertion complete');
+      const updateStmt = `UPDATE leads SET pain_points=?, reason_for_outreach=?, lead_quality=?,
+        confidence_score=?, enriched_at=?, status=? WHERE email=?`;
+      for (const lead of refined) {
+        if (lead.enriched_at) {
+          await db.run(updateStmt, [
+            lead.pain_points || '', lead.reason_for_outreach || '',
+            lead.lead_quality || null, lead.confidence_score || null,
+            lead.enriched_at, lead.status || 'enriched', lead.email,
+          ]);
+        }
+      }
+      logger.info({ runId }, '[PIPELINE] DB enrichment update complete');
     } catch (err) {
-      errors.push(`DB insert: ${err.message}`);
-      logger.error({ runId, err }, '[PIPELINE] DB insertion failed');
+      errors.push(`DB enrichment update: ${err.message}`);
+      logger.error({ runId, err }, '[PIPELINE] DB enrichment update failed');
     }
 
     stats.errors = errors.length;
@@ -124,9 +147,6 @@ export async function runPipeline(triggeredBy = 'scheduler') {
     pipelineState.lastRunStats = stats;
 
     ioInstance?.emit('pipeline_done', { runId, stats });
-    if (stats.inserted > 0) {
-      ioInstance?.emit('new_leads', { count: stats.inserted, runId });
-    }
 
     logger.info({ runId, stats }, '[PIPELINE] Run complete');
     return { runId, stats };

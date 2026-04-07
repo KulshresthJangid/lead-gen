@@ -46,7 +46,7 @@ router.get('/', async (req, res, next) => {
       [...params, limit, offset],
     );
 
-    res.json({ data, total, page, limit, totalPages: Math.ceil(total / limit) });
+    res.json({ leads: data, total, page, limit, totalPages: Math.ceil(total / limit) });
   } catch (err) {
     next(err);
   }
