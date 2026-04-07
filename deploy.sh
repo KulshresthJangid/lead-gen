@@ -62,17 +62,15 @@ VITE_SOCKET_PATH=/lead-server/socket.io/ \
 
 log "Frontend built → ${CLIENT_DIR}/dist"
 
-# Fix traverse permissions so nginx (www-data/nginx user) can serve files
-# from under /root/ — nginx needs +x on every directory in the path.
-section "Client dist — fixing nginx permissions"
-(
-  dir="${CLIENT_DIR}/dist"
-  while [ "$dir" != "/" ]; do
-    chmod o+x "$dir" 2>/dev/null || true
-    dir="$(dirname "$dir")"
-  done
-)
-log "Traverse (+x) permissions set on client/dist and all parent directories"
+# Copy dist to a standard www path so nginx (www-data/nginx user) can read it
+# without needing access through /root. Nginx alias should point to this path:
+#   alias /var/www/lead-gen-client/;
+section "Client dist — publishing to /var/www/lead-gen-client/"
+NGINX_SERVE_DIR="/var/www/lead-gen-client"
+mkdir -p "${NGINX_SERVE_DIR}"
+rsync -a --delete "${CLIENT_DIR}/dist/" "${NGINX_SERVE_DIR}/"
+chmod -R a+rX "${NGINX_SERVE_DIR}"
+log "Frontend published → ${NGINX_SERVE_DIR}"
 
 # ── Step 3: Server .env ───────────────────────────────────────────────────────
 section "Server — environment file"
