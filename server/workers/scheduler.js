@@ -157,10 +157,35 @@ export async function triggerNow() {
   return { conflict: false };
 }
 
+let continuousLoopActive = false;
+
+async function continuousLoop() {
+  continuousLoopActive = true;
+  logger.info('Continuous pipeline loop started');
+  while (continuousLoopActive) {
+    await runPipeline('scheduler');
+    if (!continuousLoopActive) break;
+    // Small breathing gap between runs
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  logger.info('Continuous pipeline loop stopped');
+}
+
 export function reschedule(intervalMinutes) {
+  // Stop any existing cron
   if (cronTask) {
     cronTask.stop();
     cronTask = null;
+  }
+  // Stop any existing continuous loop
+  continuousLoopActive = false;
+
+  if (Number(intervalMinutes) === 0) {
+    // Continuous mode — run immediately and loop forever
+    pipelineState.nextRunAt = new Date().toISOString();
+    continuousLoop();
+    logger.info('Scheduler started in continuous mode');
+    return;
   }
 
   const valid = [15, 30, 60, 360];

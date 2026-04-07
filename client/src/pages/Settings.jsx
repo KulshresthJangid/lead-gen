@@ -201,6 +201,7 @@ export default function Settings() {
             value={form.scraping_interval}
             onChange={(e) => updateForm('scraping_interval', e.target.value)}
           >
+            <option value="0">Continuous (run back-to-back)</option>
             <option value="15">Every 15 min</option>
             <option value="30">Every 30 min</option>
             <option value="60">Every hour</option>
