@@ -92,7 +92,7 @@ export default function Settings() {
       ...f,
       scraper_targets: [
         ...f.scraper_targets,
-        { name: '', url: '', selectors: {} },
+        { name: '', url: '', query: '', selectors: {} },
       ],
     }));
   }
@@ -238,6 +238,13 @@ export default function Settings() {
                     placeholder="https://example.com/team"
                     value={target.url}
                     onChange={(e) => updateTarget(i, 'url', e.target.value)}
+                  />
+                  <input
+                    type="text"
+                    className="input py-1.5 text-sm sm:col-span-2"
+                    placeholder="GitHub query (e.g. founder email:true location:India)"
+                    value={target.query || ''}
+                    onChange={(e) => updateTarget(i, 'query', e.target.value)}
                   />
                 </div>
                 <button

@@ -164,7 +164,7 @@ export async function scrapeLeads(targets = []) {
     try {
       let leads = [];
       if (target.type === 'github' || target.url?.includes('github')) {
-        leads = await scrapeGitHubBios(target.query || 'developer');
+        leads = await scrapeGitHubBios(target.query || 'developer email:true');
       } else if (target.url) {
         leads = await scrapeCustomUrl(target.url, target.selectors || {});
       }
