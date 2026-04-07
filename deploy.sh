@@ -19,9 +19,6 @@ CLIENT_DIR="${PROJECT_DIR}/client"
 SERVER_PORT="${SERVER_PORT:-3002}"
 PM2_APP_NAME="lead-gen-server"
 PROD_DOMAIN="${PROD_DOMAIN:-https://buildwithkulshresth.com}"
-NGINX_CONF_SRC="${PROJECT_DIR}/nginx-lead-gen.conf"
-NGINX_CONF_DEST="/etc/nginx/sites-available/lead-gen.conf"
-NGINX_LINK="/etc/nginx/sites-enabled/lead-gen.conf"
 
 # ── Colours ───────────────────────────────────────────────────────────────────
 G='\033[0;32m'; Y='\033[1;33m'; R='\033[0;31m'; B='\033[1m'; NC='\033[0m'
@@ -107,34 +104,9 @@ else
   log "Backend started (PID $!) — logs at ${LOG_FILE}"
 fi
 
-# ── Step 5: Nginx — deploy config ────────────────────────────────────────────
-section "Nginx — deploying config"
-if [ ! -f "${NGINX_CONF_SRC}" ]; then
-  die "Nginx config not found: ${NGINX_CONF_SRC}"
-fi
-
-if command -v nginx >/dev/null 2>&1; then
-  log "Copying config → ${NGINX_CONF_DEST}"
-  cp "${NGINX_CONF_SRC}" "${NGINX_CONF_DEST}"
-
-  # Create sites-enabled symlink if it doesn't exist yet
-  if [ -d "$(dirname "${NGINX_LINK}")" ] && [ ! -e "${NGINX_LINK}" ]; then
-    ln -sf "${NGINX_CONF_DEST}" "${NGINX_LINK}"
-    log "Symlink created: ${NGINX_LINK}"
-  fi
-
-  log "Testing nginx configuration..."
-  if nginx -t 2>&1; then
-    systemctl reload nginx
-    log "Nginx reloaded successfully"
-  else
-    die "nginx -t failed — fix ${NGINX_CONF_SRC} and then run: sudo systemctl reload nginx"
-  fi
-else
-  warn "nginx binary not found on this machine — skipping nginx step"
-  log "Nginx config is at: ${NGINX_CONF_SRC}"
-  log "Copy it manually: sudo cp ${NGINX_CONF_SRC} /etc/nginx/sites-available/lead-gen.conf"
-fi
+# ── Step 5: Nginx — skipped (managed externally) ─────────────────────────────
+section "Nginx — skipped"
+log "Nginx config is managed externally by ops — no changes made"
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 section "Deployment complete"
@@ -147,5 +119,5 @@ echo "  Useful commands:"
 echo "    pm2 logs ${PM2_APP_NAME}       # stream backend logs"
 echo "    pm2 monit                       # live process monitor"
 echo "    pm2 restart ${PM2_APP_NAME}    # hard restart"
-echo "    nginx -t && systemctl reload nginx"
+
 echo ""
