@@ -62,6 +62,18 @@ VITE_SOCKET_PATH=/lead-server/socket.io/ \
 
 log "Frontend built → ${CLIENT_DIR}/dist"
 
+# Fix traverse permissions so nginx (www-data/nginx user) can serve files
+# from under /root/ — nginx needs +x on every directory in the path.
+section "Client dist — fixing nginx permissions"
+(
+  dir="${CLIENT_DIR}/dist"
+  while [ "$dir" != "/" ]; do
+    chmod o+x "$dir" 2>/dev/null || true
+    dir="$(dirname "$dir")"
+  done
+)
+log "Traverse (+x) permissions set on client/dist and all parent directories"
+
 # ── Step 3: Server .env ───────────────────────────────────────────────────────
 section "Server — environment file"
 ENV_FILE="${SERVER_DIR}/.env"
