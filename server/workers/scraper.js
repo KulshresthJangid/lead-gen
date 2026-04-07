@@ -61,11 +61,11 @@ async function scrapeGitHubBios(query = 'developer') {
   const leads = [];
   try {
     const searchRes = await throttledGet('https://api.github.com/search/users', {
-      params: { q: query, per_page: 10, type: 'Users' },
+      params: { q: query, per_page: 30, type: 'Users' },
       headers: { Accept: 'application/vnd.github.v3+json' },
     });
 
-    const users = (searchRes.data?.items || []).slice(0, 8);
+    const users = (searchRes.data?.items || []).slice(0, 30);
 
     for (const user of users) {
       try {
@@ -164,7 +164,7 @@ export async function scrapeLeads(targets = []) {
     try {
       let leads = [];
       if (target.type === 'github' || target.url?.includes('github')) {
-        leads = await scrapeGitHubBios(target.query || 'developer email:true');
+        leads = await scrapeGitHubBios(target.query || 'developer location:India followers:>10');
       } else if (target.url) {
         leads = await scrapeCustomUrl(target.url, target.selectors || {});
       }
@@ -176,7 +176,7 @@ export async function scrapeLeads(targets = []) {
 
   // If no targets configured, run a demo GitHub scrape
   if (targets.length === 0) {
-    const demo = await scrapeGitHubBios('developer email:true location:USA');
+    const demo = await scrapeGitHubBios('developer location:India followers:>10');
     allLeads.push(...demo);
   }
 
