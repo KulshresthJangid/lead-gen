@@ -10,7 +10,7 @@ const router = Router();
 const settingsSchema = z.object({
   ollama_endpoint: z.string().url().optional(),
   ollama_model: z.string().min(1).optional(),
-  scraping_interval: z.enum(['15', '30', '60', '360']).optional(),
+  scraping_interval: z.enum(['0', '15', '30', '60', '360']).optional(),
   product_description: z.string().max(1000).optional(),
   icp_description: z.string().max(1000).optional(),
   scraper_targets: z.array(
@@ -37,7 +37,7 @@ router.put('/', validate(settingsSchema), (req, res, next) => {
     const updated = writeConfig(req.body);
 
     // Reschedule if interval changed
-    if (req.body.scraping_interval && req.body.scraping_interval !== prev.scraping_interval) {
+    if (req.body.scraping_interval != null && req.body.scraping_interval !== prev.scraping_interval) {
       reschedule(parseInt(req.body.scraping_interval, 10));
     }
 
