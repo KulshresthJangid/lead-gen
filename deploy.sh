@@ -62,15 +62,43 @@ VITE_SOCKET_PATH=/lead-server/socket.io/ \
 
 log "Frontend built → ${CLIENT_DIR}/dist"
 
-# Copy dist to a standard www path so nginx (www-data/nginx user) can read it
-# without needing access through /root. Nginx alias should point to this path:
-#   alias /var/www/lead-gen-client/;
+# Copy dist to /var/www/ so nginx worker can read it (avoids 403 from /root/)
 section "Client dist — publishing to /var/www/lead-gen-client/"
 NGINX_SERVE_DIR="/var/www/lead-gen-client"
 mkdir -p "${NGINX_SERVE_DIR}"
 rsync -a --delete "${CLIENT_DIR}/dist/" "${NGINX_SERVE_DIR}/"
 chmod -R a+rX "${NGINX_SERVE_DIR}"
 log "Frontend published → ${NGINX_SERVE_DIR}"
+
+# Patch the nginx alias in service.conf to point to the new www path, then reload
+section "Nginx — patching alias in service.conf and reloading"
+NGINX_SERVICE_CONF=""
+for candidate in \
+  /etc/nginx/sites-available/service.conf \
+  /etc/nginx/sites-enabled/service.conf \
+  /etc/nginx/conf.d/service.conf; do
+  if [ -f "$candidate" ]; then
+    NGINX_SERVICE_CONF="$candidate"
+    break
+  fi
+done
+
+if [ -n "${NGINX_SERVICE_CONF}" ]; then
+  log "Found nginx config: ${NGINX_SERVICE_CONF}"
+  # Replace any alias still pointing at the old /root/...dist/ path
+  sed -i "s|alias ${CLIENT_DIR}/dist/;|alias ${NGINX_SERVE_DIR}/;|g" "${NGINX_SERVICE_CONF}"
+  # Also handle the root-relative path in case git was cloned elsewhere
+  sed -i "s|alias /root/apps/lead-gen/client/dist/;|alias ${NGINX_SERVE_DIR}/;|g" "${NGINX_SERVICE_CONF}"
+  if nginx -t 2>&1; then
+    systemctl reload nginx
+    log "Nginx reloaded — alias now points to ${NGINX_SERVE_DIR}"
+  else
+    warn "nginx -t failed — check ${NGINX_SERVICE_CONF} manually, then: systemctl reload nginx"
+  fi
+else
+  warn "service.conf not found in standard locations — please reload nginx manually"
+  warn "Make sure: alias /lead-client/ points to ${NGINX_SERVE_DIR}/"
+fi
 
 # ── Step 3: Server .env ───────────────────────────────────────────────────────
 section "Server — environment file"
