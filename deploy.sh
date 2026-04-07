@@ -62,9 +62,11 @@ VITE_SOCKET_PATH=/drip-api/socket.io/ \
 
 log "Frontend built → ${CLIENT_DIR}/dist"
 
-# Ensure nginx worker can read the built files (same pattern as other apps on this server)
+# Fix permissions and SELinux context so nginx can serve from /root/apps/
+# (nginx runs with httpd_sys_content_t enforcement on SELinux systems)
 chmod -R a+rX "${CLIENT_DIR}/dist"
-log "Permissions set on ${CLIENT_DIR}/dist"
+chcon -R -t httpd_sys_content_t "${CLIENT_DIR}/dist" 2>/dev/null || true
+log "Permissions and SELinux context set on ${CLIENT_DIR}/dist"
 
 # ── Step 3: Server .env ───────────────────────────────────────────────────────
 section "Server — environment file"
