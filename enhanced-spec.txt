@@ -1,0 +1,779 @@
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+B2B LEAD GENERATION & ENRICHMENT PLATFORM — FULL TECHNICAL SPEC
+Version 2.0 | Enhanced Build Prompt
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+TECH STACK
+──────────────────────────────────────────────────────────────────
+  Backend  : Node.js 20+ (ESM), Express 5
+  Frontend : React 18 + Vite + Tailwind CSS 3 + shadcn/ui
+  Database : better-sqlite3 (dev) / PostgreSQL via pg (prod)
+  AI       : Ollama localhost:11434 — model: mistral (configurable)
+  Realtime : Socket.IO 4
+  Scheduler: node-cron
+  Testing  : Vitest (backend unit), Playwright (E2E)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. REPOSITORY STRUCTURE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/
+├── package.json                  ← root workspace (concurrently)
+├── .env.example
+├── config.json                   ← runtime ICP/scraper settings
+├── /server
+│   ├── index.js                  ← Express app + Socket.IO bootstrap
+│   ├── db.js                     ← DB init, migrations, query helpers
+│   ├── /workers
+│   │   ├── scraper.js            ← web scraping engine
+│   │   ├── enricher.js           ← Ollama/Mistral enrichment
+│   │   ├── deduplicator.js       ← SHA-256 hash + Levenshtein dedup
+│   │   └── scheduler.js          ← node-cron pipeline orchestrator
+│   ├── /routes
+│   │   ├── leads.js              ← CRUD, categorize, export
+│   │   ├── stats.js              ← analytics & trend endpoints
+│   │   ├── pipeline.js           ← pipeline status + manual trigger
+│   │   └── settings.js           ← read/write config.json
+│   ├── /middleware
+│   │   ├── errorHandler.js       ← global error handler
+│   │   ├── rateLimiter.js        ← express-rate-limit for API
+│   │   └── validate.js           ← zod request validation
+│   └── /utils
+│       ├── logger.js             ← pino structured logger
+│       └── csv.js                ← csv-stringify helper
+└── /client
+    ├── vite.config.js
+    ├── tailwind.config.js
+    └── /src
+        ├── main.jsx
+        ├── App.jsx               ← router setup
+        ├── /pages
+        │   ├── Dashboard.jsx
+        │   ├── Analytics.jsx
+        │   ├── LeadDetail.jsx    ← full single-lead view
+        │   └── Settings.jsx
+        ├── /components
+        │   ├── LeadTable.jsx
+        │   ├── LeadRow.jsx
+        │   ├── CategoryBadge.jsx
+        │   ├── ManualCategoryModal.jsx
+        │   ├── PipelineStatusBar.jsx
+        │   ├── StatsCards.jsx
+        │   ├── FiltersPanel.jsx
+        │   ├── ExportButton.jsx
+        │   └── SetupWizard.jsx   ← first-boot ICP wizard
+        ├── /hooks
+        │   ├── useLeads.js       ← paginated lead fetching
+        │   ├── usePipeline.js    ← polling + socket status
+        │   └── useSocket.js      ← Socket.IO connection manager
+        ├── /context
+        │   └── ToastContext.jsx
+        └── /api
+            └── client.js         ← axios instance with base URL
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2. DATABASE SCHEMA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+TABLE: leads
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT
+  full_name           TEXT NOT NULL
+  job_title           TEXT
+  company_name        TEXT
+  company_domain      TEXT
+  email               TEXT UNIQUE NOT NULL
+  linkedin_url        TEXT
+  location            TEXT
+  pain_points         TEXT                        ← Mistral-generated
+  reason_for_outreach TEXT                        ← Mistral-generated (refined)
+  lead_quality        TEXT CHECK(lead_quality IN ('hot','warm','cold'))
+  confidence_score    INTEGER CHECK(confidence_score BETWEEN 0 AND 100)
+  manual_category     TEXT CHECK(manual_category IN
+                        ('hot','warm','cold','disqualified','pending'))
+                      DEFAULT 'pending'
+  manual_notes        TEXT
+  status              TEXT DEFAULT 'new'          ← new | enriched | emailed | archived
+  source              TEXT                        ← scraper source identifier
+  enrichment_attempts INTEGER DEFAULT 0
+  enriched_at         DATETIME
+  email_hash          TEXT UNIQUE NOT NULL        ← SHA-256 for dedup
+  created_at          DATETIME DEFAULT CURRENT_TIMESTAMP
+  updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP
+
+INDEXES:
+  CREATE INDEX idx_leads_quality   ON leads(lead_quality);
+  CREATE INDEX idx_leads_category  ON leads(manual_category);
+  CREATE INDEX idx_leads_domain    ON leads(company_domain);
+  CREATE INDEX idx_leads_created   ON leads(created_at);
+  CREATE INDEX idx_leads_hash      ON leads(email_hash);
+
+TABLE: pipeline_log
+  id              INTEGER PRIMARY KEY AUTOINCREMENT
+  run_id          TEXT UNIQUE NOT NULL           ← UUID v4
+  started_at      DATETIME NOT NULL
+  finished_at     DATETIME
+  status          TEXT DEFAULT 'running'         ← running | success | partial | failed
+  scraped_count   INTEGER DEFAULT 0
+  dupes_skipped   INTEGER DEFAULT 0
+  inserted_count  INTEGER DEFAULT 0
+  enriched_count  INTEGER DEFAULT 0
+  error_count     INTEGER DEFAULT 0
+  errors_json     TEXT                           ← JSON array of error messages
+  triggered_by    TEXT DEFAULT 'scheduler'       ← scheduler | manual | api
+
+TABLE: settings
+  key   TEXT PRIMARY KEY
+  value TEXT NOT NULL
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+3. BACKEND — DETAILED IMPLEMENTATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+──────────────────────────────────────────────────────────────────
+3.1  db.js — Database Bootstrap
+──────────────────────────────────────────────────────────────────
+- Detect DB_TYPE env var: 'sqlite' (default) or 'postgres'
+- SQLite: use better-sqlite3, WAL mode enabled, file: ./data/leads.db
+- PostgreSQL: use 'pg' Pool with connection string from DATABASE_URL
+- Export unified query interface: { get, all, run, exec }
+  so all other modules are DB-agnostic
+- Run schema migrations on startup via versioned SQL files:
+    /server/migrations/001_initial.sql
+    /server/migrations/002_pipeline_log.sql
+    /server/migrations/003_indexes.sql
+- On first boot with empty DB, seed default settings row:
+    ollama_endpoint: "http://localhost:11434"
+    ollama_model: "mistral"
+    scraping_interval: "30"
+    is_setup_complete: "false"
+
+──────────────────────────────────────────────────────────────────
+3.2  deduplicator.js
+──────────────────────────────────────────────────────────────────
+import crypto from 'crypto';
+import levenshtein from 'fast-levenshtein';
+
+function normalizeEmail(email) {
+  return email.toLowerCase().trim();
+}
+
+function hashEmail(email) {
+  return crypto.createHash('sha256')
+    .update(normalizeEmail(email))
+    .digest('hex');
+}
+
+async function isDuplicate(db, lead) {
+  // Guard: skip if email missing
+  if (!lead.email) return { isDupe: true, reason: 'missing_email' };
+
+  // Check 1: exact email hash
+  const byHash = await db.get(
+    'SELECT id FROM leads WHERE email_hash = ?',
+    hashEmail(lead.email)
+  );
+  if (byHash) return { isDupe: true, reason: 'email_hash_match' };
+
+  // Check 2: fuzzy full_name within same company_domain
+  if (lead.company_domain && lead.full_name) {
+    const candidates = await db.all(
+      'SELECT id, full_name FROM leads WHERE company_domain = ?',
+      lead.company_domain.toLowerCase().trim()
+    );
+    for (const c of candidates) {
+      if (levenshtein.get(c.full_name, lead.full_name) < 3) {
+        return { isDupe: true, reason: 'fuzzy_name_domain_match' };
+      }
+    }
+  }
+  return { isDupe: false };
+}
+
+// Filter an array of raw leads; returns { unique: [], dupes: [] }
+export async function filter(db, leads) {
+  const unique = [], dupes = [];
+  for (const lead of leads) {
+    const result = await isDuplicate(db, lead);
+    if (result.isDupe) {
+      dupes.push({ lead, reason: result.reason });
+    } else {
+      // Pre-compute hash for storage
+      lead.email_hash = hashEmail(lead.email);
+      unique.push(lead);
+    }
+  }
+  return { unique, dupes };
+}
+
+──────────────────────────────────────────────────────────────────
+3.3  scraper.js
+──────────────────────────────────────────────────────────────────
+- Accept target URL list from config.json (scraper_targets array)
+- Use axios with rotating User-Agent pool (10+ real browser UA strings)
+- Rate limiter: 1 req/sec per domain via bottleneck or p-throttle
+- Timeout per request: 10 seconds; retry once on 429 / 503
+- Use cheerio for HTML parsing
+- Source adapters (each returns normalized lead objects):
+    scrapeGitHubBios(urls)
+    scrapeHunterDomain(domain)
+    scrapePublicLinkedIn(url)    ← respectful rate limiting, no login
+    scrapeCustomUrl(url, selectors) ← driven by config.json selector map
+- Normalization: trim all strings, lowercase company_domain,
+  ensure email contains '@' before including
+- Return: Array<RawLead> — never include hallucinated data;
+  if a field is not found in the HTML it is set to ""
+- Log each source's yield: { source, url, found: N, skipped: N }
+
+RawLead shape:
+  { full_name, job_title, company_name, company_domain,
+    email, linkedin_url, location, source }
+
+──────────────────────────────────────────────────────────────────
+3.4  enricher.js
+──────────────────────────────────────────────────────────────────
+CONSTANTS:
+  OLLAMA_ENDPOINT  ← from config / env
+  OLLAMA_MODEL     ← from config / env (default: "mistral")
+  BATCH_SIZE = 5
+
+SYSTEM PROMPT (injected into 'prompt' field — not 'system'):
+──────────────────────────────────────────────────────────
+[SYSTEM]
+You are a B2B lead enrichment and qualification engine.
+
+STRICT RULES:
+- Output ONLY valid JSON. No markdown. No preamble. No code fences.
+- Do NOT invent, hallucinate, or modify: full_name, company_name,
+  email, company_domain. Return them EXACTLY as received.
+- If a field cannot be inferred, return "" (empty string).
+- Enrich ONLY: pain_points, reason_for_outreach,
+  lead_quality (hot|warm|cold), confidence_score (0–100).
+- lead_quality = hot  → strong ICP fit, clear pain, decision-maker
+- lead_quality = warm → partial fit or unclear role
+- lead_quality = cold → poor fit or insufficient data
+
+OUTPUT FORMAT (strict):
+{
+  "leads": [
+    {
+      "full_name": "",
+      "job_title": "",
+      "company_name": "",
+      "company_domain": "",
+      "email": "",
+      "linkedin_url": "",
+      "location": "",
+      "pain_points": "",
+      "reason_for_outreach": "",
+      "lead_quality": "hot|warm|cold",
+      "confidence_score": 0
+    }
+  ]
+}
+[/SYSTEM]
+──────────────────────────────────────────────────────────
+
+FIRST PASS — enrichBatch(leads):
+  - Chunk leads into groups of BATCH_SIZE
+  - Build prompt: system prompt + JSON-encoded lead array
+  - POST to Ollama /api/generate with stream: false
+  - Extract response.response string
+  - Strip ```json ... ``` fences if present
+  - JSON.parse(); on failure: retry once with explicit instruction
+    "Return ONLY the JSON with no other text."
+  - On second failure: log error, skip batch, return raw leads
+  - Merge enriched fields back onto original lead objects
+
+SECOND PASS — refineOutreach(leads):
+  - Process one lead at a time
+  - Prompt addition:
+    "Improve ONLY the reason_for_outreach field.
+     Make it hyper-personalized (reference their company/role/domain),
+     under 3 sentences, no generic sales language.
+     Return complete lead JSON (single object, not array)."
+  - Same parse-retry-skip logic
+  - Update only reason_for_outreach on the lead object
+
+OFFLINE RESILIENCE:
+  - Wrap all Ollama calls in try/catch
+  - If Ollama unreachable: set enriched_at=null, enrichment_attempts+=1
+  - Return leads with AI fields empty — pipeline continues without enrichment
+  - Emit socket event 'ollama_offline' with timestamp
+
+──────────────────────────────────────────────────────────────────
+3.5  scheduler.js
+──────────────────────────────────────────────────────────────────
+- Read scraping_interval from config.json on startup
+  (valid values: 15, 30, 60, 360 — in minutes)
+- Build cron expression dynamically: `*/${interval} * * * *`
+- Maintain pipelineState object:
+    { lastRunAt, nextRunAt, status, lastRunStats }
+- Pipeline run sequence:
+    1. Generate run_id (uuid v4), insert pipeline_log row (status=running)
+    2. Load scraper_targets from config.json
+    3. raw = await scraper.scrapeLeads(targets)
+    4. { unique, dupes } = await deduplicator.filter(db, raw)
+    5. enriched = await enricher.enrichBatch(db, unique)
+    6. refined = await enricher.refineOutreach(enriched)
+    7. inserted = await db.insertLeads(refined)
+    8. Update pipeline_log: status=success, counts, finished_at
+    9. io.emit('new_leads', { count: inserted.length, runId })
+   10. Update pipelineState
+
+- Expose: { getState(), triggerNow(), reschedule(intervalMinutes) }
+- Log each step with pino logger: [PIPELINE][run_id] Step N complete
+
+──────────────────────────────────────────────────────────────────
+3.6  REST API ROUTES
+──────────────────────────────────────────────────────────────────
+
+GET /api/leads
+  Query params:
+    page          (default 1)
+    limit         (default 25, max 100)
+    search        (full-text: name, company, email)
+    quality       (hot|warm|cold)
+    category      (hot|warm|cold|disqualified|pending)
+    source        (filter by scraper source)
+    dateFrom      (ISO date)
+    dateTo        (ISO date)
+    sortBy        (confidence_score|created_at|lead_quality)
+    sortDir       (asc|desc, default desc)
+  Response:
+    { data: Lead[], total, page, limit, totalPages }
+
+GET /api/leads/:id
+  Response: full Lead object
+
+PUT /api/leads/:id/categorize
+  Body (zod-validated):
+    { manual_category: enum, manual_notes?: string }
+  Sets updated_at = NOW()
+  Response: updated Lead
+
+DELETE /api/leads/:id
+  Soft delete: sets status = 'archived'
+
+GET /api/stats
+  Response:
+    {
+      totalLeads, hotCount, warmCount, coldCount,
+      pendingReview, avgConfidenceScore,
+      enrichmentSuccessRate, duplicateSkipRate,
+      dailyTrend: [{ date, count }],         ← last 30 days
+      topCompanies: [{ company_name, count }] ← top 10
+    }
+
+POST /api/leads/export
+  Body: same filters as GET /api/leads (no pagination)
+  Streams CSV response with Content-Disposition header
+  Columns: id, full_name, job_title, company_name, company_domain,
+           email, linkedin_url, location, pain_points,
+           reason_for_outreach, lead_quality, confidence_score,
+           manual_category, manual_notes, source, created_at
+
+GET /api/pipeline/status
+  Response:
+    {
+      lastRunAt, nextRunAt, status,
+      lastRun: { scraped, dupesSkipped, inserted, enriched, errors },
+      ollamaOnline: bool,
+      history: last 10 pipeline_log rows
+    }
+
+POST /api/pipeline/trigger
+  Manually triggers a pipeline run immediately
+  Response: { runId, message: "Pipeline started" }
+
+GET /api/settings
+  Returns config.json as JSON
+
+PUT /api/settings
+  Body: partial config object (validated)
+  Writes to config.json; calls scheduler.reschedule() if interval changed
+  Response: updated config
+
+POST /api/setup/complete
+  Marks is_setup_complete = "true" in DB settings
+  Called by SetupWizard on first boot
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+4. FRONTEND — DETAILED IMPLEMENTATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+──────────────────────────────────────────────────────────────────
+4.1  App.jsx — Router & Layout
+──────────────────────────────────────────────────────────────────
+- React Router v6 with layout wrapper
+- On mount: GET /api/settings → if is_setup_complete === "false",
+  render <SetupWizard /> fullscreen (blocks all other routes)
+- Routes:
+    /             → Dashboard
+    /analytics    → Analytics
+    /leads/:id    → LeadDetail
+    /settings     → Settings
+- Persistent sidebar nav with icons:
+    Dashboard, Analytics, Settings
+- PipelineStatusBar pinned at top of every page
+
+──────────────────────────────────────────────────────────────────
+4.2  useSocket.js
+──────────────────────────────────────────────────────────────────
+- Singleton Socket.IO connection to backend
+- Events handled:
+    'new_leads'     → toast("🎯 {count} new leads added"), invalidate query cache
+    'ollama_offline'→ toast.warn("⚠ Ollama offline — enrichment paused")
+    'pipeline_start'→ set PipelineStatusBar to "running" state
+    'pipeline_done' → set PipelineStatusBar to "idle" state
+
+──────────────────────────────────────────────────────────────────
+4.3  Dashboard.jsx
+──────────────────────────────────────────────────────────────────
+Layout (top to bottom):
+  ┌──────────────────────────────────────────────┐
+  │ PipelineStatusBar (last run, next run, live) │
+  ├──────────────────────────────────────────────┤
+  │ StatsCards: Total | Hot | Warm | Cold | Pend │
+  ├──────────────────────────────────────────────┤
+  │ FiltersPanel (search, quality, category,     │
+  │               date range, sort)              │
+  ├──────────────────────────────────────────────┤
+  │ LeadTable (paginated, sortable)              │
+  │  + Export CSV button (top right of table)    │
+  └──────────────────────────────────────────────┘
+
+New lead highlight:
+  - Socket 'new_leads' event stores new lead IDs in ref
+  - LeadRow checks if id is in ref → adds yellow ring + fade-out
+    animation over 5 seconds via Tailwind transition classes
+
+──────────────────────────────────────────────────────────────────
+4.4  LeadTable.jsx + LeadRow.jsx
+──────────────────────────────────────────────────────────────────
+Table columns (with sort arrows on sortable cols):
+  Name ↕ | Job Title | Company | Email | AI Quality | Score ↕ |
+  Manual Cat | Actions
+
+LeadRow:
+  - Collapsed state shows core columns
+  - Expand toggle → reveals expanded panel:
+      Pain Points: {pain_points}
+      Outreach Reason: {reason_for_outreach}
+      Location: {location}
+      LinkedIn: clickable link
+      Source: {source}
+      Dates: created_at, enriched_at
+  - "Categorize" button → opens ManualCategoryModal
+  - "View" button → navigates to /leads/:id
+
+CategoryBadge color scheme:
+  lead_quality:
+    hot  → bg-green-100 text-green-800 border-green-300
+    warm → bg-amber-100 text-amber-800 border-amber-300
+    cold → bg-slate-100 text-slate-600 border-slate-300
+  manual_category (different family):
+    hot          → bg-emerald-500 text-white
+    warm         → bg-orange-400 text-white
+    cold         → bg-blue-300 text-blue-900
+    disqualified → bg-red-500 text-white
+    pending      → bg-purple-100 text-purple-700 border-purple-300
+
+──────────────────────────────────────────────────────────────────
+4.5  ManualCategoryModal.jsx
+──────────────────────────────────────────────────────────────────
+- Triggered by "Categorize" button
+- Modal shows (read-only):
+    Name, Job Title, Company, Email
+    AI Quality badge, AI Score
+    Pain Points block, Outreach Reason block
+- Editable controls:
+    Category selector (segmented button group): Hot/Warm/Cold/Disqualified/Pending
+    Notes textarea (4 rows, max 1000 chars with live counter)
+    Save button (disabled if no change)
+- Keyboard shortcuts (useEffect on keydown):
+    H → select Hot
+    W → select Warm
+    C → select Cold
+    D → select Disqualified
+    Esc → close modal
+    Enter → save (if valid)
+- On save: PUT /api/leads/:id/categorize → toast success → close
+- Optimistic update: update local query cache before API responds
+
+──────────────────────────────────────────────────────────────────
+4.6  Analytics.jsx
+──────────────────────────────────────────────────────────────────
+Charts (using Recharts):
+  1. LineChart — Leads per day (last 30 days)
+     X: date, Y: count, color: #6366f1
+  2. PieChart/Donut — Lead quality distribution
+     green=hot, amber=warm, slate=cold
+  3. PieChart/Donut — Manual category distribution
+     custom palette matching CategoryBadge colors
+  4. BarChart — Top 10 companies (horizontal bars)
+     X: count, Y: company_name, color: #0ea5e9
+
+Stats row at top:
+  Avg Confidence Score | Enrichment Success Rate |
+  Duplicate Skip Rate  | Total Pipeline Runs     |
+  Last Run Status
+
+Data source: GET /api/stats (auto-refresh every 60s)
+
+──────────────────────────────────────────────────────────────────
+4.7  LeadDetail.jsx (full single-lead view)
+──────────────────────────────────────────────────────────────────
+- Two-column layout:
+    Left: all lead fields in labeled sections
+    Right: AI Enrichment panel + Manual Categorization form
+- "Copy Email" button
+- "Open LinkedIn" button (opens in new tab)
+- Inline categorization (no modal needed)
+- Show enrichment history if multiple attempts logged
+
+──────────────────────────────────────────────────────────────────
+4.8  Settings.jsx
+──────────────────────────────────────────────────────────────────
+Sections:
+
+[AI Configuration]
+  Ollama endpoint  (text input, default http://localhost:11434)
+  Ollama model     (text input, default mistral)
+  Test Connection  (POST /api/pipeline/trigger a dry test run)
+  Status indicator (Online ✓ / Offline ✗ — live via /api/pipeline/status)
+
+[Ideal Customer Profile]
+  Product/Service description (textarea, 500 char max)
+  ICP description             (textarea, 500 char max)
+  Both injected into Ollama enrichment prompt context
+
+[Scraper Configuration]
+  Scraping interval (dropdown: 15min | 30min | 1hr | 6hr)
+  Scraper targets (dynamic list):
+    - Each entry: URL + optional CSS selector map (JSON)
+    - Add/remove buttons
+    - Drag-to-reorder (react-beautiful-dnd or @dnd-kit)
+
+[Danger Zone]
+  Clear all leads (requires typing "DELETE" confirmation)
+  Reset pipeline logs
+
+Save button → PUT /api/settings → toast success
+
+──────────────────────────────────────────────────────────────────
+4.9  SetupWizard.jsx (first-boot only)
+──────────────────────────────────────────────────────────────────
+Step 1: Welcome screen — explain the platform, prerequisites checklist
+  ☐ Node.js 20+ installed
+  ☐ Ollama running: `ollama run mistral`
+  ☐ Internet connection for scraping
+
+Step 2: Describe your product/service (textarea)
+Step 3: Describe your Ideal Customer Profile (ICP) (textarea)
+Step 4: Add first scraper target URL (optional, can skip)
+Step 5: Verify Ollama connection → show Online/Offline status
+  If offline: warn but allow continue
+Step 6: Done → POST /api/setup/complete → redirect to Dashboard
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+5. REAL-TIME SOCKET.IO EVENTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Server emits:
+  'new_leads'       { count: N, runId: "uuid" }
+  'pipeline_start'  { runId: "uuid", triggeredBy: "scheduler|manual" }
+  'pipeline_done'   { runId, stats: { scraped, inserted, dupes, enriched } }
+  'pipeline_error'  { runId, error: "message" }
+  'ollama_offline'  { timestamp }
+  'ollama_online'   { timestamp }
+
+Client listens on all events, updates:
+  - React Query cache invalidation for /api/leads and /api/stats
+  - PipelineStatusBar reactive state
+  - Toast notifications (react-hot-toast)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+6. SECURITY & RELIABILITY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- All API inputs validated with zod before DB operations
+- express-rate-limit on all routes: 100 req/15min per IP
+- Parameterized queries only — no string interpolation in SQL
+- Ollama response validated with JSON.parse() in try/catch — retry once, then discard
+- Scraper never stores a lead without a valid email (contains '@' and '.')
+- config.json never exposes DATABASE_URL (use env var only)
+- CORS restricted to localhost:3000 in dev; configurable ALLOWED_ORIGINS in .env
+- Content-Security-Policy headers via helmet on backend
+- No external AI API keys stored — Ollama is local-only
+- CSV export sanitizes cell values to prevent CSV injection
+  (prefix cells starting with =, +, -, @ with a single quote)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+7. ERROR HANDLING & RESILIENCE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- Pipeline never crashes the server: all steps wrapped in try/catch
+- Each step failure logged to pipeline_log.errors_json
+- Partial success: if enrichment fails, raw scraped leads still saved
+- DB write failures: retry 3x with exponential backoff (100ms, 200ms, 400ms)
+- If pipeline is already running (from cron + manual trigger race):
+  skip the new run, log a warning, return 409 from POST /api/pipeline/trigger
+- Graceful shutdown: SIGTERM handler waits for in-progress pipeline run before exit
+- Frontend: axios interceptor catches 429/503 → shows "Server busy" toast
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+8. PACKAGE.JSON — FULL DEPENDENCY LIST
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ROOT (package.json):
+  Scripts:
+    "dev"   : "concurrently \"npm run dev --prefix server\" \"npm run dev --prefix client\""
+    "build" : "npm run build --prefix client"
+    "start" : "npm run start --prefix server"
+  DevDependencies:
+    concurrently
+
+SERVER (server/package.json):
+  Dependencies:
+    express               ^5.0.0
+    better-sqlite3        ^9.0.0
+    pg                    ^8.11.0        ← PostgreSQL prod
+    node-cron             ^3.0.3
+    axios                 ^1.6.0
+    cheerio               ^1.0.0
+    socket.io             ^4.7.0
+    cors                  ^2.8.5
+    dotenv                ^16.3.0
+    csv-stringify          ^6.4.0
+    fast-levenshtein      ^3.0.0
+    zod                   ^3.22.0
+    uuid                  ^9.0.0
+    pino                  ^8.16.0
+    pino-pretty           ^10.3.0
+    helmet                ^7.1.0
+    express-rate-limit    ^7.1.0
+  DevDependencies:
+    vitest                ^1.0.0
+    nodemon               ^3.0.0
+
+CLIENT (client/package.json):
+  Dependencies:
+    react                 ^18.2.0
+    react-dom             ^18.2.0
+    react-router-dom      ^6.20.0
+    tailwindcss           ^3.3.0
+    @tailwindcss/forms    ^0.5.7
+    autoprefixer          ^10.4.16
+    recharts              ^2.10.0
+    socket.io-client      ^4.7.0
+    react-hot-toast       ^2.4.1
+    date-fns              ^3.0.0
+    axios                 ^1.6.0
+    @tanstack/react-query ^5.0.0        ← for caching + invalidation
+    @dnd-kit/core         ^6.1.0        ← drag-to-reorder in Settings
+  DevDependencies:
+    vite                  ^5.0.0
+    @vitejs/plugin-react  ^4.2.0
+    eslint                ^8.55.0
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+9. ENVIRONMENT VARIABLES (.env.example)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Server
+PORT=3001
+DB_TYPE=sqlite                          # sqlite | postgres
+DATABASE_URL=postgres://user:pass@localhost:5432/leadgen
+ALLOWED_ORIGINS=http://localhost:3000
+LOG_LEVEL=info
+
+# Client (Vite)
+VITE_API_URL=http://localhost:3001
+VITE_SOCKET_URL=http://localhost:3001
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+10. STARTUP SEQUENCE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Prerequisites:
+  1. `ollama serve` running (or `ollama run mistral`)
+  2. Node.js 20+
+
+First-time setup:
+  1. git clone / unzip project
+  2. cp .env.example .env
+  3. npm install          (root installs concurrently)
+  4. cd server && npm install
+  5. cd ../client && npm install
+  6. cd .. && npm run dev
+  7. Open http://localhost:3000 → SetupWizard appears
+  8. Complete wizard → pipeline starts automatically
+
+Subsequent starts:
+  npm run dev
+
+Production:
+  npm run build           (builds React to client/dist)
+  npm start               (serves static client + Express on port 3001)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+11. TESTING REQUIREMENTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Unit tests (Vitest):
+  - deduplicator: test hash collision, fuzzy match edge cases
+  - enricher: test JSON strip, parse failure retry, offline fallback
+  - CSV export: test CSV injection prevention
+
+Integration tests:
+  - GET /api/leads with filters
+  - PUT /api/leads/:id/categorize with invalid enum → 400
+  - POST /api/leads/export → valid CSV headers
+
+E2E (Playwright, optional):
+  - SetupWizard flow
+  - Categorize lead via modal + keyboard shortcut
+  - Export CSV with filter applied
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+12. IMPLEMENTATION ORDER (RECOMMENDED)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Phase 1 — Foundation (backend only):
+  1. db.js + migrations
+  2. deduplicator.js + unit tests
+  3. enricher.js (Ollama integration + offline fallback)
+  4. scraper.js (one working adapter: GitHub bios)
+  5. scheduler.js (wires all workers)
+  6. index.js (Express + Socket.IO bootstrap)
+
+Phase 2 — API Layer:
+  7. /routes/leads.js (GET list + single + categorize)
+  8. /routes/stats.js
+  9. /routes/pipeline.js
+  10. /routes/settings.js
+  11. middleware (errorHandler, rateLimiter, validate)
+
+Phase 3 — Frontend Core:
+  12. Vite + Tailwind setup, App.jsx, router
+  13. api/client.js, useSocket.js, hooks
+  14. SetupWizard (blocks dashboard until complete)
+  15. Dashboard.jsx + LeadTable + LeadRow + CategoryBadge
+  16. ManualCategoryModal (with keyboard shortcuts)
+  17. PipelineStatusBar + StatsCards
+
+Phase 4 — Analytics & Settings:
+  18. Analytics.jsx (all 4 charts)
+  19. LeadDetail.jsx
+  20. Settings.jsx (with save + live Ollama status)
+  21. ExportButton.jsx
+
+Phase 5 — Polish:
+  22. New lead highlight animation
+  23. Loading skeletons on table
+  24. Error boundary components
+  25. Unit + integration tests
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+END OF SPEC
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
