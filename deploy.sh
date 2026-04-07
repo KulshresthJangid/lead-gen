@@ -108,9 +108,45 @@ else
   log "Backend started (PID $!) — logs at ${LOG_FILE}"
 fi
 
-# ── Step 5: Nginx — skipped (managed externally) ─────────────────────────────
-section "Nginx — skipped"
-log "Nginx config is managed externally by ops — no changes made"
+# ── Step 5: Nginx — deploy service.conf and reload ───────────────────────────
+section "Nginx — deploying service.conf"
+NGINX_CONF_SRC="${PROJECT_DIR}/service.conf"
+
+if [ ! -f "${NGINX_CONF_SRC}" ]; then
+  die "service.conf not found at ${NGINX_CONF_SRC}"
+fi
+
+# Detect where nginx config lives on this machine
+NGINX_DEST=""
+for candidate in \
+  /etc/nginx/sites-available/service.conf \
+  /etc/nginx/conf.d/service.conf; do
+  if [ -d "$(dirname "$candidate")" ]; then
+    NGINX_DEST="$candidate"
+    break
+  fi
+done
+
+if [ -z "${NGINX_DEST}" ]; then
+  warn "Could not find nginx config directory — skipping nginx step"
+else
+  cp "${NGINX_CONF_SRC}" "${NGINX_DEST}"
+  log "Copied → ${NGINX_DEST}"
+
+  # Create sites-enabled symlink if needed (sites-available pattern)
+  NGINX_LINK="/etc/nginx/sites-enabled/service.conf"
+  if [[ "${NGINX_DEST}" == *sites-available* ]] && [ ! -e "${NGINX_LINK}" ]; then
+    ln -sf "${NGINX_DEST}" "${NGINX_LINK}"
+    log "Symlink created: ${NGINX_LINK}"
+  fi
+
+  if nginx -t 2>&1; then
+    systemctl reload nginx
+    log "Nginx reloaded successfully"
+  else
+    die "nginx -t failed — fix ${NGINX_CONF_SRC} then run: systemctl reload nginx"
+  fi
+fi
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 section "Deployment complete"
