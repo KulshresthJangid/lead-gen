@@ -52,13 +52,13 @@ npm ci
 log "Client deps installed"
 
 section "Client — building for production"
-# Base path   : /lead-client/   → Vite embeds this in all asset URLs
-# API URL     : /lead-server    → nginx strips prefix, proxies to Express on :3002
-# Socket path : /lead-server/socket.io/ → nginx strips prefix, Socket.IO default path lands at /socket.io/
-VITE_API_URL=/lead-server \
+# Base path   : /drip/        → Vite embeds this in all asset URLs
+# API URL     : /drip-api     → nginx strips prefix, proxies to Express on :3002
+# Socket path : /drip-api/socket.io/ → nginx strips prefix, Socket.IO default path lands at /socket.io/
+VITE_API_URL=/drip-api \
 VITE_SOCKET_URL="" \
-VITE_SOCKET_PATH=/lead-server/socket.io/ \
-  npx vite build --base /lead-client/
+VITE_SOCKET_PATH=/drip-api/socket.io/ \
+  npx vite build --base /drip/
 
 log "Frontend built → ${CLIENT_DIR}/dist"
 
@@ -116,8 +116,8 @@ log "Nginx config is managed externally by ops — no changes made"
 section "Deployment complete"
 echo -e "${G}${B}✔  LeadGen Pro is live!${NC}"
 echo ""
-echo "  Frontend  →  ${PROD_DOMAIN}/lead-client/"
-echo "  Backend   →  ${PROD_DOMAIN}/lead-server/  (internal port ${SERVER_PORT})"
+echo "  Frontend  →  ${PROD_DOMAIN}/drip/"
+echo "  Backend   →  ${PROD_DOMAIN}/drip-api/  (internal port ${SERVER_PORT})"
 echo ""
 echo "  Useful commands:"
 echo "    pm2 logs ${PM2_APP_NAME}       # stream backend logs"
