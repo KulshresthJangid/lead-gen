@@ -13,6 +13,8 @@ import leadsRouter from './routes/leads.js';
 import statsRouter from './routes/stats.js';
 import pipelineRouter from './routes/pipeline.js';
 import settingsRouter from './routes/settings.js';
+import authRouter from './routes/auth.js';
+import { requireAuth } from './middleware/authMiddleware.js';
 import { initScheduler } from './workers/scheduler.js';
 import logger from './utils/logger.js';
 
@@ -34,10 +36,14 @@ app.use(express.json({ limit: '1mb' }));
 app.use(rateLimiter);
 
 // ── API Routes ────────────────────────────────────────────────────────────────
-app.use('/api/leads', leadsRouter);
-app.use('/api/stats', statsRouter);
-app.use('/api/pipeline', pipelineRouter);
-app.use('/api/settings', settingsRouter);
+// Auth endpoints — public (no token required)
+app.use('/api/auth', authRouter);
+
+// All other API routes require a valid JWT
+app.use('/api/leads',    requireAuth, leadsRouter);
+app.use('/api/stats',    requireAuth, statsRouter);
+app.use('/api/pipeline', requireAuth, pipelineRouter);
+app.use('/api/settings', requireAuth, settingsRouter);
 
 // ── Static (production) ───────────────────────────────────────────────────────
 if (process.env.NODE_ENV === 'production') {
