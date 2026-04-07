@@ -2,18 +2,21 @@ import { useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, NavLink } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import {
-  LayoutDashboard, BarChart2, Settings, Zap,
+  LayoutDashboard, BarChart2, Settings, Zap, LogOut,
 } from 'lucide-react';
 import Dashboard from './pages/Dashboard.jsx';
 import Analytics from './pages/Analytics.jsx';
 import LeadDetail from './pages/LeadDetail.jsx';
 import SettingsPage from './pages/Settings.jsx';
+import Login from './pages/Login.jsx';
 import SetupWizard from './components/SetupWizard.jsx';
 import PipelineStatusBar from './components/PipelineStatusBar.jsx';
 import apiClient from './api/client.js';
+import { useAuth } from './context/AuthContext.jsx';
 
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 function Sidebar() {
+  const { logout } = useAuth();
   const navItems = [
     { to: '/', icon: LayoutDashboard, label: 'Dashboard', end: true },
     { to: '/analytics', icon: BarChart2, label: 'Analytics' },
@@ -48,8 +51,15 @@ function Sidebar() {
           </NavLink>
         ))}
       </nav>
-      <div className="px-4 py-3 border-t border-gray-700">
+      <div className="px-4 py-3 border-t border-gray-700 flex items-center justify-between">
         <p className="text-xs text-gray-600">© 2026 LeadGen Pro</p>
+        <button
+          onClick={logout}
+          title="Sign out"
+          className="text-gray-500 hover:text-gray-300 transition-colors"
+        >
+          <LogOut className="w-4 h-4" />
+        </button>
       </div>
     </aside>
   );
@@ -68,31 +78,33 @@ function Layout({ children }) {
   );
 }
 
+// ── Protected route ───────────────────────────────────────────────────────────
+function ProtectedRoute({ children }) {
+  const { authenticated } = useAuth();
+  if (authenticated === null) return null; // still verifying token
+  if (!authenticated) return <Navigate to="/login" replace />;
+  return children;
+}
+
 // ── App ───────────────────────────────────────────────────────────────────────
 export default function App() {
+  const { authenticated } = useAuth();
   const [setupComplete, setSetupComplete] = useState(null);
 
   useEffect(() => {
+    if (!authenticated) return; // don't fetch settings until logged in
     apiClient
       .get('/settings')
       .then((res) => setSetupComplete(res.data.is_setup_complete === 'true'))
       .catch(() => setSetupComplete(false));
-  }, []);
+  }, [authenticated]);
 
-  if (setupComplete === null) {
+  // Still verifying stored token
+  if (authenticated === null) {
     return (
-      <div className="flex items-center justify-center h-screen bg-gray-50">
-        <div className="text-gray-400 text-sm animate-pulse">Loading…</div>
+      <div className="flex items-center justify-center h-screen bg-gray-950">
+        <div className="text-gray-500 text-sm animate-pulse">Loading…</div>
       </div>
-    );
-  }
-
-  if (!setupComplete) {
-    return (
-      <>
-        <SetupWizard onComplete={() => setSetupComplete(true)} />
-        <Toaster position="top-right" toastOptions={{ duration: 4000 }} />
-      </>
     );
   }
 
@@ -102,10 +114,32 @@ export default function App() {
   return (
     <BrowserRouter basename={basename}>
       <Routes>
-        <Route path="/" element={<Layout><Dashboard /></Layout>} />
-        <Route path="/analytics" element={<Layout><Analytics /></Layout>} />
-        <Route path="/leads/:id" element={<Layout><LeadDetail /></Layout>} />
-        <Route path="/settings" element={<Layout><SettingsPage /></Layout>} />
+        {/* Public */}
+        <Route
+          path="/login"
+          element={authenticated ? <Navigate to="/" replace /> : <Login />}
+        />
+
+        {/* Protected */}
+        <Route
+          path="/"
+          element={
+            <ProtectedRoute>
+              {setupComplete === false ? (
+                <SetupWizard onComplete={() => setSetupComplete(true)} />
+              ) : setupComplete === null ? (
+                <div className="flex items-center justify-center h-screen bg-gray-950">
+                  <div className="text-gray-500 text-sm animate-pulse">Loading…</div>
+                </div>
+              ) : (
+                <Layout><Dashboard /></Layout>
+              )}
+            </ProtectedRoute>
+          }
+        />
+        <Route path="/analytics" element={<ProtectedRoute><Layout><Analytics /></Layout></ProtectedRoute>} />
+        <Route path="/leads/:id" element={<ProtectedRoute><Layout><LeadDetail /></Layout></ProtectedRoute>} />
+        <Route path="/settings" element={<ProtectedRoute><Layout><SettingsPage /></Layout></ProtectedRoute>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
       <Toaster position="top-right" toastOptions={{ duration: 4000 }} />
