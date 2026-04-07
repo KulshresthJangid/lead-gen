@@ -22,6 +22,10 @@ module.exports = {
         LOG_LEVEL: 'info',
         // Update this to your public domain
         ALLOWED_ORIGINS: 'https://buildwithkulshresth.com,http://buildwithkulshresth.com',
+        // Auth credentials — override these with strong values
+        AUTH_USERNAME: 'admin',
+        AUTH_PASSWORD: 'admin',
+        JWT_SECRET: 'change-me-to-a-long-random-string',
       },
 
       // Local dev env (default)
@@ -31,6 +35,9 @@ module.exports = {
         DB_TYPE: 'sqlite',
         LOG_LEVEL: 'debug',
         ALLOWED_ORIGINS: 'http://localhost:3000',
+        AUTH_USERNAME: 'admin',
+        AUTH_PASSWORD: 'admin',
+        JWT_SECRET: 'leadgen-dev-secret',
       },
     },
   ],
