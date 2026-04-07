@@ -1,0 +1,9 @@
+{
+  "ollama_endpoint": "http://localhost:11434",
+  "ollama_model": "mistral",
+  "scraping_interval": "30",
+  "product_description": "",
+  "icp_description": "",
+  "scraper_targets": [],
+  "is_setup_complete": "false"
+}
