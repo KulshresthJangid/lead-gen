@@ -1,11 +1,13 @@
-import 'dotenv/config';
+import { config as dotenvConfig } from 'dotenv';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+const __dotenvDir = dirname(fileURLToPath(import.meta.url));
+dotenvConfig({ path: join(__dotenvDir, '.env') });
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
 import helmet from 'helmet';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
 import { initDb } from './db.js';
 import { rateLimiter } from './middleware/rateLimiter.js';
 import { errorHandler } from './middleware/errorHandler.js';
