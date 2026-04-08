@@ -56,13 +56,21 @@ function isValidEmail(email) {
   return typeof email === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-// ── GitHub adapter (uses public API — 60 req/hr unauthenticated) ──────────────
+// ── GitHub adapter (uses public API — 60 req/hr unauth, 5000/hr with token) ──
+function githubHeaders() {
+  const token = process.env.GITHUB_TOKEN;
+  return {
+    Accept: 'application/vnd.github.v3+json',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
+
 async function scrapeGitHubBios(query = 'developer') {
   const leads = [];
   try {
     const searchRes = await throttledGet('https://api.github.com/search/users', {
       params: { q: query, per_page: 30, type: 'Users' },
-      headers: { Accept: 'application/vnd.github.v3+json' },
+      headers: githubHeaders(),
     });
 
     const users = (searchRes.data?.items || []).slice(0, 30);
@@ -71,7 +79,7 @@ async function scrapeGitHubBios(query = 'developer') {
       try {
         await delay(500); // be extra polite with GitHub API
         const userRes = await throttledGet(user.url, {
-          headers: { Accept: 'application/vnd.github.v3+json' },
+          headers: githubHeaders(),
         });
         const u = userRes.data;
 
