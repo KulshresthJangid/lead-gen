@@ -98,6 +98,7 @@ async function callOllama(endpoint, model, prompt) {
       stream: false,
       options: {
         num_predict: NUM_PREDICT,
+        num_ctx: 8192,    // full Mistral 7B context window — prevents mid-response truncation
         temperature: 0.1, // low temperature → more deterministic JSON output
       },
     },
