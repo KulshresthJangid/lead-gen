@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
-  ArrowLeft, Copy, ExternalLink, Loader2, Tag,
+  ArrowLeft, Copy, ExternalLink, Loader2, Tag, Sparkles,
 } from 'lucide-react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
@@ -16,8 +16,8 @@ function Field({ label, value, mono = false }) {
   if (!value) return null;
   return (
     <div>
-      <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">{label}</dt>
-      <dd className={`mt-1 text-sm text-gray-900 ${mono ? 'font-mono' : ''}`}>{value}</dd>
+      <dt className="text-[10px] font-bold uppercase tracking-widest mb-1" style={{ color: 'var(--text-3)' }}>{label}</dt>
+      <dd className={`text-sm ${mono ? 'font-mono' : ''}`} style={{ color: 'var(--text-1)' }}>{value}</dd>
     </div>
   );
 }
@@ -31,7 +31,6 @@ export default function LeadDetail() {
   const [category, setCategory] = useState('');
   const [notes, setNotes] = useState('');
 
-  // Sync form state when lead loads
   const [synced, setSynced] = useState(false);
   if (lead && !synced) {
     setCategory(lead.manual_category || 'pending');
@@ -39,7 +38,7 @@ export default function LeadDetail() {
     setSynced(true);
   }
 
-  const mutation = useMutation({
+  const saveMutation = useMutation({
     mutationFn: async () => {
       const res = await apiClient.put(`/leads/${id}/categorize`, {
         manual_category: category,
@@ -56,6 +55,19 @@ export default function LeadDetail() {
     onError: () => toast.error('Failed to save'),
   });
 
+  const enrichMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiClient.post(`/leads/${id}/enrich`);
+      return res.data;
+    },
+    onSuccess: (updated) => {
+      queryClient.setQueryData(['lead', id], updated);
+      queryClient.invalidateQueries({ queryKey: ['leads'] });
+      toast.success('Lead enriched by AI');
+    },
+    onError: () => toast.error('Enrichment failed — is Ollama running?'),
+  });
+
   function copyEmail() {
     if (!lead?.email) return;
     navigator.clipboard.writeText(lead.email).then(() => toast.success('Email copied!'));
@@ -64,7 +76,7 @@ export default function LeadDetail() {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-64">
-        <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
+        <Loader2 className="w-6 h-6 animate-spin" style={{ color: 'var(--text-3)' }} />
       </div>
     );
   }
@@ -72,22 +84,30 @@ export default function LeadDetail() {
   if (isError || !lead) {
     return (
       <div className="text-center py-16">
-        <p className="text-gray-500 mb-4">Lead not found.</p>
+        <p className="mb-4" style={{ color: 'var(--text-3)' }}>Lead not found.</p>
         <Link to="/" className="btn-secondary">← Back to Dashboard</Link>
       </div>
     );
   }
 
+  const isEnriched = !!lead.enriched_at;
+
   return (
-    <div className="max-w-4xl space-y-6">
+    <div className="max-w-4xl space-y-6 animate-slide-up">
       {/* Header */}
       <div className="flex items-center gap-4">
-        <button onClick={() => navigate(-1)} className="p-2 hover:bg-gray-100 rounded-lg transition-colors">
-          <ArrowLeft className="w-5 h-5 text-gray-600" />
+        <button
+          onClick={() => navigate(-1)}
+          className="p-2 rounded-lg transition-colors"
+          style={{ color: 'var(--text-2)' }}
+          onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--hover)'; }}
+          onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = ''; }}
+        >
+          <ArrowLeft className="w-5 h-5" />
         </button>
         <div className="flex-1 min-w-0">
-          <h1 className="text-2xl font-bold text-gray-900 truncate">{lead.full_name}</h1>
-          <p className="text-sm text-gray-500">
+          <h1 className="text-2xl font-black truncate" style={{ color: 'var(--text-1)' }}>{lead.full_name}</h1>
+          <p className="text-sm mt-0.5" style={{ color: 'var(--text-3)' }}>
             {lead.job_title && `${lead.job_title} · `}
             {lead.company_name}
           </p>
@@ -101,32 +121,40 @@ export default function LeadDetail() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left — Lead info */}
         <div className="lg:col-span-2 space-y-4">
+          {/* Contact */}
           <div className="card p-5">
-            <h2 className="text-sm font-semibold text-gray-700 mb-4">Contact Information</h2>
+            <h2 className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: 'var(--text-3)' }}>Contact Information</h2>
             <dl className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <Field label="Full Name" value={lead.full_name} />
               <Field label="Job Title" value={lead.job_title} />
               <Field label="Company" value={lead.company_name} />
               <Field label="Domain" value={lead.company_domain} />
               <div>
-                <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">Email</dt>
+                <dt className="text-[10px] font-bold uppercase tracking-widest mb-1" style={{ color: 'var(--text-3)' }}>Email</dt>
                 <dd className="mt-1 flex items-center gap-2">
-                  <span className="text-sm font-mono text-gray-900">{lead.email}</span>
-                  <button onClick={copyEmail} className="p-1 hover:bg-gray-100 rounded">
-                    <Copy className="w-3.5 h-3.5 text-gray-500" />
+                  <span className="text-sm font-mono" style={{ color: 'var(--text-1)' }}>{lead.email}</span>
+                  <button
+                    onClick={copyEmail}
+                    className="p-1 rounded transition-colors"
+                    style={{ color: 'var(--text-3)' }}
+                    onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--text-1)'; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-3)'; }}
+                  >
+                    <Copy className="w-3.5 h-3.5" />
                   </button>
                 </dd>
               </div>
               <Field label="Location" value={lead.location} />
               {lead.linkedin_url && (
                 <div>
-                  <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">LinkedIn</dt>
+                  <dt className="text-[10px] font-bold uppercase tracking-widest mb-1" style={{ color: 'var(--text-3)' }}>LinkedIn</dt>
                   <dd className="mt-1">
                     <a
                       href={lead.linkedin_url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-sm text-indigo-600 hover:underline flex items-center gap-1"
+                      className="text-sm hover:underline flex items-center gap-1"
+                      style={{ color: 'var(--text-1)' }}
                     >
                       Open profile <ExternalLink className="w-3 h-3" />
                     </a>
@@ -136,18 +164,40 @@ export default function LeadDetail() {
             </dl>
           </div>
 
-          {(lead.pain_points || lead.reason_for_outreach) && (
-            <div className="card p-5">
-              <h2 className="text-sm font-semibold text-gray-700 mb-4">AI Enrichment</h2>
-              <dl className="space-y-3">
+          {/* AI Enrichment */}
+          <div className="card p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xs font-bold uppercase tracking-widest" style={{ color: 'var(--text-3)' }}>AI Enrichment</h2>
+              {!isEnriched && (
+                <button
+                  onClick={() => enrichMutation.mutate()}
+                  disabled={enrichMutation.isPending}
+                  className="btn-primary flex items-center gap-1.5 text-xs py-1.5 px-3 disabled:opacity-50"
+                >
+                  {enrichMutation.isPending
+                    ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    : <Sparkles className="w-3.5 h-3.5" />
+                  }
+                  {enrichMutation.isPending ? 'Enriching…' : 'Enrich now'}
+                </button>
+              )}
+            </div>
+
+            {isEnriched ? (
+              <dl className="space-y-4">
                 <Field label="Pain Points" value={lead.pain_points} />
                 <Field label="Reason for Outreach" value={lead.reason_for_outreach} />
               </dl>
-            </div>
-          )}
+            ) : (
+              <p className="text-sm italic" style={{ color: 'var(--text-3)' }}>
+                Not yet enriched. Click "Enrich now" or wait for the next auto-sweep (every 5 min).
+              </p>
+            )}
+          </div>
 
+          {/* Metadata */}
           <div className="card p-5">
-            <h2 className="text-sm font-semibold text-gray-700 mb-3">Metadata</h2>
+            <h2 className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: 'var(--text-3)' }}>Metadata</h2>
             <dl className="grid grid-cols-2 sm:grid-cols-3 gap-3">
               <Field label="Source" value={lead.source} />
               <Field label="Status" value={lead.status} />
@@ -167,35 +217,38 @@ export default function LeadDetail() {
         <div className="space-y-4">
           {lead.confidence_score != null && (
             <div className="card p-4 text-center">
-              <p className="text-3xl font-bold text-indigo-600">{lead.confidence_score}%</p>
-              <p className="text-xs text-gray-500 mt-1">AI Confidence Score</p>
+              <p className="text-3xl font-black" style={{ color: 'var(--text-1)' }}>{lead.confidence_score}%</p>
+              <p className="text-xs mt-1" style={{ color: 'var(--text-3)' }}>AI Confidence Score</p>
             </div>
           )}
 
           <div className="card p-4 space-y-4">
-            <h2 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-              <Tag className="w-4 h-4" />
+            <h2 className="text-sm font-semibold flex items-center gap-2" style={{ color: 'var(--text-1)' }}>
+              <Tag className="w-4 h-4" style={{ color: 'var(--text-3)' }} />
               Manual Category
             </h2>
 
             <div className="grid grid-cols-1 gap-1.5">
-              {CATEGORIES.map((cat) => (
-                <button
-                  key={cat}
-                  onClick={() => setCategory(cat)}
-                  className={`px-3 py-2 rounded-lg text-sm text-left capitalize transition-all ${
-                    category === cat
-                      ? 'bg-indigo-600 text-white font-medium'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                  }`}
-                >
-                  {cat}
-                </button>
-              ))}
+              {CATEGORIES.map((cat) => {
+                const isActive = category === cat;
+                return (
+                  <button
+                    key={cat}
+                    onClick={() => setCategory(cat)}
+                    className="px-3 py-2 rounded-lg text-sm text-left capitalize transition-all border"
+                    style={isActive
+                      ? { backgroundColor: 'var(--btn-bg)', color: 'var(--btn-text)', borderColor: 'var(--btn-bg)', fontWeight: 600 }
+                      : { backgroundColor: 'var(--hover)', color: 'var(--text-2)', borderColor: 'var(--border)' }
+                    }
+                  >
+                    {cat}
+                  </button>
+                );
+              })}
             </div>
 
             <div>
-              <label className="label text-xs">Notes</label>
+              <label className="text-[10px] font-bold uppercase tracking-widest block mb-1" style={{ color: 'var(--text-3)' }}>Notes</label>
               <textarea
                 className="input min-h-[80px] resize-none text-sm"
                 placeholder="Add notes…"
@@ -206,11 +259,11 @@ export default function LeadDetail() {
             </div>
 
             <button
-              onClick={() => mutation.mutate()}
-              disabled={mutation.isPending}
-              className="btn-primary w-full gap-2 justify-center"
+              onClick={() => saveMutation.mutate()}
+              disabled={saveMutation.isPending}
+              className="btn-primary w-full gap-2 justify-center flex items-center"
             >
-              {mutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
+              {saveMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
               Save Changes
             </button>
           </div>

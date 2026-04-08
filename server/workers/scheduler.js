@@ -297,7 +297,7 @@ async function runEnrichmentSweep() {
 
 function startEnrichmentCron() {
   if (enrichmentCronTask) enrichmentCronTask.stop();
-  // Run at minute 0 of every hour
-  enrichmentCronTask = cron.schedule('0 * * * *', runEnrichmentSweep);
-  logger.info('[ENRICH-CRON] Hourly enrichment cron started');
+  // Run every 5 minutes so unenriched leads get picked up quickly
+  enrichmentCronTask = cron.schedule('*/5 * * * *', runEnrichmentSweep);
+  logger.info('[ENRICH-CRON] 5-minute enrichment cron started');
 }

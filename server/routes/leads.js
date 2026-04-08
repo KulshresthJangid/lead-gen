@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { getDb } from '../db.js';
 import { validate } from '../middleware/validate.js';
 import { leadsToCSV } from '../utils/csv.js';
+import { enrichBatch, refineOutreach } from '../workers/enricher.js';
+import { readConfig } from '../utils/config.js';
 
 const router = Router();
 
@@ -96,6 +98,40 @@ router.put('/:id/categorize', validate(categorizeSchema), async (req, res, next)
     );
     const updated = await db.get('SELECT * FROM leads WHERE id = ?', [req.params.id]);
     if (!updated) return res.status(404).json({ error: 'Lead not found' });
+    res.json(updated);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── POST /api/leads/:id/enrich ─────────────────────────────────────────────────
+router.post('/:id/enrich', async (req, res, next) => {
+  try {
+    const db = getDb();
+    const lead = await db.get('SELECT * FROM leads WHERE id = ?', [req.params.id]);
+    if (!lead) return res.status(404).json({ error: 'Lead not found' });
+
+    const config = readConfig();
+    const [enriched] = await enrichBatch([lead], config);
+    const [refined]  = await refineOutreach([enriched], config);
+
+    if (refined?.enriched_at) {
+      await db.run(
+        `UPDATE leads SET pain_points=?, reason_for_outreach=?, lead_quality=?,
+         confidence_score=?, enriched_at=?, status=? WHERE id=?`,
+        [
+          refined.pain_points || '',
+          refined.reason_for_outreach || '',
+          refined.lead_quality || null,
+          refined.confidence_score ?? null,
+          refined.enriched_at,
+          'enriched',
+          req.params.id,
+        ],
+      );
+    }
+
+    const updated = await db.get('SELECT * FROM leads WHERE id = ?', [req.params.id]);
     res.json(updated);
   } catch (err) {
     next(err);
