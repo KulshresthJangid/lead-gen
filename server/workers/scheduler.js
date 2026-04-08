@@ -111,6 +111,7 @@ export async function runPipeline(triggeredBy = 'scheduler') {
     try {
       const updateStmt = `UPDATE leads SET pain_points=?, reason_for_outreach=?, lead_quality=?,
         confidence_score=?, enriched_at=?, status=? WHERE email=?`;
+      const enrichedEmailSet = new Set(refined.filter((l) => l.enriched_at).map((l) => l.email));
       for (const lead of refined) {
         if (lead.enriched_at) {
           await db.run(updateStmt, [
@@ -118,6 +119,13 @@ export async function runPipeline(triggeredBy = 'scheduler') {
             lead.lead_quality || null, lead.confidence_score || null,
             lead.enriched_at, lead.status || 'enriched', lead.email,
           ]);
+        } else {
+          // Enrich failed for this lead — increment attempt count so the hourly sweep
+          // can pick it up, and stop retrying after 3 failures.
+          await db.run(
+            `UPDATE leads SET enrichment_attempts = enrichment_attempts + 1 WHERE email = ?`,
+            [lead.email],
+          );
         }
       }
       logger.info({ runId }, '[PIPELINE] DB enrichment update complete');
@@ -238,9 +246,11 @@ async function runEnrichmentSweep() {
   try {
     // Find leads with no enrichment yet, limit to 20 per sweep so Ollama isn't
     // swamped and the hour gap prevents pile-up.
+    // Skip leads that have already failed 3 times — they need manual review
     const pending = await db.all(
       `SELECT * FROM leads WHERE (enriched_at IS NULL OR enriched_at = '')
-       AND email != '' ORDER BY created_at DESC LIMIT 20`,
+       AND email != '' AND enrichment_attempts < 3
+       ORDER BY created_at DESC LIMIT 20`,
     );
 
     if (!pending.length) {
@@ -266,8 +276,22 @@ async function runEnrichmentSweep() {
       }
     }
 
+    // Increment enrichment_attempts for any lead that still failed after this sweep.
+    // After 3 failures the lead is excluded from future sweeps (needs manual review).
+    const enrichedEmails = new Set(refined.filter((l) => l.enriched_at).map((l) => l.email));
+    for (const lead of pending) {
+      if (!enrichedEmails.has(lead.email)) {
+        await db.run(
+          `UPDATE leads SET enrichment_attempts = enrichment_attempts + 1 WHERE email = ?`,
+          [lead.email],
+        );
+        logger.warn({ email: lead.email, attempts: (lead.enrichment_attempts || 0) + 1 },
+          '[ENRICH-CRON] Lead enrichment failed — attempt count incremented');
+      }
+    }
+
     const done = refined.filter((l) => l.enriched_at).length;
-    logger.info({ done }, '[ENRICH-CRON] Sweep complete');
+    logger.info({ done, failed: pending.length - done }, '[ENRICH-CRON] Sweep complete');
     if (done > 0) ioInstance?.emit('leads_enriched', { count: done });
   } catch (err) {
     logger.error({ err: err.message }, '[ENRICH-CRON] Sweep failed');

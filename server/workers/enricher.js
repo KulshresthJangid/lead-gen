@@ -1,7 +1,14 @@
 import axios from 'axios';
 import logger from '../utils/logger.js';
+import { logAiEvent } from '../utils/aiLogger.js';
 
-const BATCH_SIZE = 5;
+// Mistral 7B produces incomplete JSON when given too many leads at once.
+// Batch of 2 keeps the output well within its context window.
+const BATCH_SIZE = 2;
+
+// Max output tokens. Mistral 7B: 2 leads ≈ 600 tokens output, 2048 is safe.
+// If done_reason === 'length' the model was cut off — we detect and repair.
+const NUM_PREDICT = 2048;
 
 function buildSystemPrompt(config = {}) {
   const product = config.product_description
@@ -36,31 +43,173 @@ function stripJsonFences(text) {
     .trim();
 }
 
-async function callOllama(endpoint, model, prompt) {
-  const response = await axios.post(
-    `${endpoint}/api/generate`,
-    { model, prompt, stream: false },
-    { timeout: 0 },  // no timeout — Mistral on CPU can take several minutes per batch
-  );
-  return response.data.response || '';
+/**
+ * Attempt to salvage a truncated JSON response.
+ * Mistral 7B sometimes stops mid-object when it hits the token limit.
+ * Strategy: find the last fully-closed lead object and close the array/wrapper.
+ */
+function repairTruncatedJson(raw) {
+  try {
+    const cleaned = stripJsonFences(raw);
+    const leadsMatch = cleaned.match(/\{"leads"\s*:\s*\[/);
+    if (!leadsMatch) return null;
+
+    const leadsStart = cleaned.indexOf('[', leadsMatch.index + leadsMatch[0].length - 1);
+    const content = cleaned.slice(leadsStart);
+
+    // Walk through the content tracking brace depth to find the last complete object
+    let depth = 0;
+    let lastCompleteIdx = -1;
+    let inString = false;
+    let escape = false;
+
+    for (let i = 0; i < content.length; i++) {
+      const c = content[i];
+      if (escape) { escape = false; continue; }
+      if (c === '\\' && inString) { escape = true; continue; }
+      if (c === '"') { inString = !inString; continue; }
+      if (inString) continue;
+      if (c === '{') depth++;
+      if (c === '}') {
+        depth--;
+        if (depth === 0) lastCompleteIdx = i;
+      }
+    }
+
+    if (lastCompleteIdx === -1) return null;
+
+    const repaired = `{"leads":[${content.slice(1, lastCompleteIdx + 1)}]}`;
+    return JSON.parse(repaired);
+  } catch {
+    return null;
+  }
 }
 
-async function parseWithRetry(endpoint, model, prompt, context = 'batch') {
+/**
+ * Call Ollama and return the raw response text, done_reason, and duration.
+ * Sets num_predict so we can detect truncation via done_reason === 'length'.
+ */
+async function callOllama(endpoint, model, prompt) {
+  const t0 = Date.now();
+  const response = await axios.post(
+    `${endpoint}/api/generate`,
+    {
+      model,
+      prompt,
+      stream: false,
+      options: {
+        num_predict: NUM_PREDICT,
+        temperature: 0.1, // low temperature → more deterministic JSON output
+      },
+    },
+    { timeout: 0 }, // no timeout — Mistral on CPU takes several minutes per batch
+  );
+  return {
+    raw: response.data.response || '',
+    done_reason: response.data.done_reason || 'stop',
+    duration_ms: Date.now() - t0,
+  };
+}
+
+/**
+ * Call Ollama, parse JSON, detect/repair truncation, retry once on failure.
+ * Logs every attempt to ai-events.jsonl via aiLogger.
+ */
+async function parseWithRetry(endpoint, model, prompt, context = 'batch', leadIds = []) {
+  const logBase = { model, context, lead_ids: leadIds };
   let raw = '';
+  let done_reason = 'stop';
+  let duration_ms = 0;
+
+  // ── Attempt 1 ──────────────────────────────────────────────────────────────
   try {
-    raw = await callOllama(endpoint, model, prompt);
-    return JSON.parse(stripJsonFences(raw));
+    ({ raw, done_reason, duration_ms } = await callOllama(endpoint, model, prompt));
+  } catch (err) {
+    logAiEvent({ ...logBase, attempt: 1, error: err.message, parsed_ok: false, duration_ms });
+    throw err;
+  }
+
+  const truncated1 = done_reason === 'length';
+  if (truncated1) {
+    logger.warn({ context }, 'Ollama response hit token limit (done_reason=length) — attempting JSON repair');
+  }
+
+  let parsed = null;
+  let repaired = false;
+  try {
+    parsed = JSON.parse(stripJsonFences(raw));
   } catch {
-    logger.warn({ context }, 'JSON parse failed — retrying with explicit instruction');
-    try {
-      const retryPrompt = `${prompt}\n\nIMPORTANT: Return ONLY the JSON object. No markdown, no explanation, no code fences.`;
-      raw = await callOllama(endpoint, model, retryPrompt);
-      return JSON.parse(stripJsonFences(raw));
-    } catch (err) {
-      logger.error({ context, raw: raw.slice(0, 200), err: err.message }, 'JSON parse failed after retry — skipping');
-      return null;
+    if (truncated1) {
+      parsed = repairTruncatedJson(raw);
+      repaired = parsed !== null;
+      if (repaired) logger.info({ context }, 'Truncated JSON repaired — partial results saved');
     }
   }
+
+  logAiEvent({
+    ...logBase,
+    attempt: 1,
+    prompt_length: prompt.length,
+    prompt_preview: prompt.slice(0, 400),
+    full_prompt: prompt,
+    raw_length: raw.length,
+    raw_preview: raw.slice(0, 600),
+    full_response: raw,
+    done_reason,
+    truncated: truncated1,
+    repaired,
+    parsed_ok: parsed !== null,
+    duration_ms,
+  });
+
+  if (parsed) return parsed;
+
+  // ── Attempt 2 (retry with stronger instruction) ────────────────────────────
+  logger.warn({ context }, 'JSON parse failed — retrying with explicit instruction');
+  const retryPrompt = `${prompt}\n\nCRITICAL: Return ONLY the raw JSON object. ` +
+    `No markdown, no code fences, no explanation. Do not stop early — complete the entire JSON.`;
+
+  let raw2 = '', done_reason2 = 'stop', duration_ms2 = 0;
+  try {
+    ({ raw: raw2, done_reason: done_reason2, duration_ms: duration_ms2 } =
+      await callOllama(endpoint, model, retryPrompt));
+  } catch (err) {
+    logAiEvent({ ...logBase, attempt: 2, error: err.message, parsed_ok: false, duration_ms: duration_ms2 });
+    return null;
+  }
+
+  const truncated2 = done_reason2 === 'length';
+  let parsed2 = null;
+  let repaired2 = false;
+  try {
+    parsed2 = JSON.parse(stripJsonFences(raw2));
+  } catch {
+    if (truncated2) {
+      parsed2 = repairTruncatedJson(raw2);
+      repaired2 = parsed2 !== null;
+    }
+  }
+
+  logAiEvent({
+    ...logBase,
+    attempt: 2,
+    prompt_length: retryPrompt.length,
+    prompt_preview: retryPrompt.slice(0, 400),
+    full_prompt: retryPrompt,
+    raw_length: raw2.length,
+    raw_preview: raw2.slice(0, 600),
+    full_response: raw2,
+    done_reason: done_reason2,
+    truncated: truncated2,
+    repaired: repaired2,
+    parsed_ok: parsed2 !== null,
+    duration_ms: duration_ms2,
+  });
+
+  if (!parsed2) {
+    logger.error({ context, raw_preview: raw.slice(0, 200) }, 'JSON parse failed after retry — skipping batch');
+  }
+  return parsed2;
 }
 
 /**
@@ -91,8 +240,24 @@ export async function enrichBatch(leads, config = {}, io = null) {
   }
 
   for (const chunk of chunks) {
+    const chunkIds = chunk.map((l) => l.email);
     const prompt = `${systemPrompt}\n\nLeads to enrich:\n${JSON.stringify(chunk)}`;
-    const result = await parseWithRetry(endpoint, model, prompt, 'enrichBatch');
+    let result = await parseWithRetry(endpoint, model, prompt, 'enrichBatch', chunkIds);
+
+    // If the batch failed entirely, fall back to one lead at a time
+    if (!result?.leads || !Array.isArray(result.leads) || result.leads.length === 0) {
+      logger.warn({ chunkSize: chunk.length }, '[ENRICH] Batch failed — falling back to per-lead enrichment');
+      result = { leads: [] };
+      for (const singleLead of chunk) {
+        const singlePrompt = `${systemPrompt}\n\nLeads to enrich:\n${JSON.stringify([singleLead])}`;
+        const singleResult = await parseWithRetry(
+          endpoint, model, singlePrompt, `enrichBatch:single:${singleLead.email}`, [singleLead.email],
+        );
+        if (singleResult?.leads?.length) {
+          result.leads.push(...singleResult.leads);
+        }
+      }
+    }
 
     if (result?.leads && Array.isArray(result.leads)) {
       for (const enrichedLead of result.leads) {
@@ -142,7 +307,7 @@ Rules:
 Lead:
 ${JSON.stringify(lead)}`;
 
-    const result = await parseWithRetry(endpoint, model, prompt, `refineOutreach:${lead.email}`);
+    const result = await parseWithRetry(endpoint, model, prompt, `refineOutreach`, [lead.email]);
     if (result && result.reason_for_outreach) {
       refined[i] = { ...refined[i], reason_for_outreach: result.reason_for_outreach };
     }
