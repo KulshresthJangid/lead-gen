@@ -75,7 +75,9 @@ async function scrapeGitHubBios(query = 'developer') {
 
     const users = (searchRes.data?.items || []).slice(0, 30);
 
+    let rateLimited = false;
     for (const user of users) {
+      if (rateLimited) break;
       try {
         await delay(500); // be extra polite with GitHub API
         const userRes = await throttledGet(user.url, {
@@ -96,7 +98,12 @@ async function scrapeGitHubBios(query = 'developer') {
           });
         }
       } catch (err) {
-        logger.warn({ username: user.login, err: err.message }, 'Failed to fetch GitHub user');
+        if (err.response?.status === 403 || err.response?.status === 429) {
+          logger.warn({ username: user.login }, 'GitHub rate limited — stopping this query');
+          rateLimited = true;
+        } else {
+          logger.warn({ username: user.login, err: err.message }, 'Failed to fetch GitHub user');
+        }
       }
     }
 
