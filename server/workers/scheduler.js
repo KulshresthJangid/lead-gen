@@ -238,17 +238,29 @@ export function initScheduler(io) {
 // Picks up any leads that were inserted but never enriched (e.g. Ollama was
 // offline, or the pipeline run finished before enrichment could complete).
 let enrichmentCronTask = null;
+let isSweepRunning = false;
+
+// Process 5 leads per sweep so each run finishes well within the 5-min window
+// even on CPU-only inference (~2-3 min/lead × 5 leads × 2 passes ≈ 25-30 min per
+// batch, but the guard ensures no stacking).  With 766 leads this clears in ~26 runs.
+const SWEEP_LIMIT = 5;
 
 async function runEnrichmentSweep() {
+  if (isSweepRunning) {
+    logger.info('[ENRICH-CRON] Previous sweep still running — skipping this tick');
+    return;
+  }
+  isSweepRunning = true;
   const db = getDb();
   const config = readConfig();
 
   try {
-    // Find all unenriched leads — no attempt cap, no batch limit.
+    // Take only the next SWEEP_LIMIT unenriched leads so the sweep always finishes.
     const pending = await db.all(
       `SELECT * FROM leads WHERE (enriched_at IS NULL OR enriched_at = '')
        AND email != ''
-       ORDER BY created_at DESC`,
+       ORDER BY created_at DESC
+       LIMIT ${SWEEP_LIMIT}`,
     );
 
     if (!pending.length) {
@@ -258,40 +270,47 @@ async function runEnrichmentSweep() {
 
     logger.info({ count: pending.length }, '[ENRICH-CRON] Starting enrichment sweep');
 
-    const enriched = await enrichBatch(pending, config, ioInstance);
-    const refined  = await refineOutreach(enriched, config);
-
     const updateStmt = `UPDATE leads SET pain_points=?, reason_for_outreach=?, lead_quality=?,
       confidence_score=?, enriched_at=?, status=? WHERE email=?`;
 
-    for (const lead of refined) {
-      if (lead.enriched_at) {
-        await db.run(updateStmt, [
-          lead.pain_points || '', lead.reason_for_outreach || '',
-          lead.lead_quality || null, lead.confidence_score || null,
-          lead.enriched_at, lead.status || 'enriched', lead.email,
-        ]);
-      }
-    }
-
-    // Increment enrichment_attempts for any lead that still failed after this sweep.
-    const enrichedEmails = new Set(refined.filter((l) => l.enriched_at).map((l) => l.email));
+    let done = 0;
+    // Process one lead at a time and write to DB immediately — prevents data loss
+    // if the sweep crashes or is interrupted mid-batch.
     for (const lead of pending) {
-      if (!enrichedEmails.has(lead.email)) {
+      try {
+        const [enriched] = await enrichBatch([lead], config, ioInstance);
+        const [refined]  = await refineOutreach([enriched], config);
+
+        if (refined?.enriched_at) {
+          await db.run(updateStmt, [
+            refined.pain_points || '', refined.reason_for_outreach || '',
+            refined.lead_quality || null, refined.confidence_score || null,
+            refined.enriched_at, refined.status || 'enriched', refined.email,
+          ]);
+          done++;
+          logger.info({ email: lead.email }, '[ENRICH-CRON] Lead enriched and saved');
+          ioInstance?.emit('leads_enriched', { count: 1 });
+        } else {
+          await db.run(
+            `UPDATE leads SET enrichment_attempts = enrichment_attempts + 1 WHERE email = ?`,
+            [lead.email],
+          );
+          logger.warn({ email: lead.email }, '[ENRICH-CRON] Lead enrichment failed — attempt incremented');
+        }
+      } catch (leadErr) {
+        logger.error({ email: lead.email, err: leadErr.message }, '[ENRICH-CRON] Error on single lead');
         await db.run(
           `UPDATE leads SET enrichment_attempts = enrichment_attempts + 1 WHERE email = ?`,
           [lead.email],
-        );
-        logger.warn({ email: lead.email, attempts: (lead.enrichment_attempts || 0) + 1 },
-          '[ENRICH-CRON] Lead enrichment failed — attempt count incremented');
+        ).catch(() => {});
       }
     }
 
-    const done = refined.filter((l) => l.enriched_at).length;
     logger.info({ done, failed: pending.length - done }, '[ENRICH-CRON] Sweep complete');
-    if (done > 0) ioInstance?.emit('leads_enriched', { count: done });
   } catch (err) {
     logger.error({ err: err.message }, '[ENRICH-CRON] Sweep failed');
+  } finally {
+    isSweepRunning = false;
   }
 }
 
