@@ -65,6 +65,62 @@ function githubHeaders() {
   };
 }
 
+// ── Large query pool — sampled randomly each run so continuous mode never repeats ──
+const GITHUB_QUERY_POOL = [
+  // Founders / CTOs
+  'founder location:India followers:>5',
+  'founder location:India followers:>10',
+  'founder location:India repos:>5',
+  'CTO location:India followers:>5',
+  'CTO location:India repos:>10',
+  'cofounder location:India followers:>5',
+  '"startup" location:India followers:>10',
+  // Engineers by city
+  'developer location:Bangalore followers:>5',
+  'developer location:Bangalore followers:>20',
+  'engineer location:Bangalore repos:>10',
+  'developer location:Mumbai followers:>5',
+  'engineer location:Mumbai repos:>5',
+  'developer location:Delhi followers:>5',
+  'developer location:Hyderabad followers:>5',
+  'developer location:Pune followers:>5',
+  'developer location:Chennai followers:>5',
+  'developer location:Kolkata followers:>5',
+  'developer location:Ahmedabad followers:>5',
+  // By specialty
+  'fullstack developer location:India followers:>5',
+  'backend developer location:India followers:>10',
+  'frontend developer location:India followers:>5',
+  'machine learning location:India followers:>5',
+  'AI engineer location:India followers:>5',
+  'devops location:India repos:>10',
+  'SaaS location:India followers:>10',
+  'fintech location:India followers:>5',
+  'open source location:India followers:>20',
+  'open source location:India followers:>50',
+  // Broader India engineering
+  'software engineer location:India repos:>15',
+  'software engineer location:India followers:>15',
+  'startup engineer location:India followers:>10',
+  'startup engineer location:India followers:>15',
+  'startup engineer location:India followers:>20',
+  'developer India repos:>20 followers:>5',
+  'developer India repos:>30',
+  // Remote / freelance signals
+  'freelance developer location:India followers:>5',
+  'independent developer location:India repos:>10',
+  'consultant location:India followers:>10',
+  // Product / growth roles
+  'product manager location:India followers:>5',
+  'growth hacker location:India followers:>5',
+  '"building in public" location:India followers:>5',
+];
+
+function pickRandomQueries(pool, n = 3) {
+  const shuffled = [...pool].sort(() => Math.random() - 0.5);
+  return shuffled.slice(0, n);
+}
+
 async function scrapeGitHubBios(query = 'developer') {
   const leads = [];
   try {
@@ -339,7 +395,16 @@ export async function scrapeLeads(targets = []) {
     try {
       let leads = [];
       if (target.type === 'github' || target.url?.includes('github.com')) {
-        leads = await scrapeGitHubBios(target.query || 'developer location:India followers:>10');
+        // Pick 3 random queries from the pool each run — include user's configured
+        // query in the pool so it still runs, but we also explore new territory.
+        const pool = target.query
+          ? [target.query, ...GITHUB_QUERY_POOL.filter((q) => q !== target.query)]
+          : GITHUB_QUERY_POOL;
+        const queries = pickRandomQueries(pool, 3);
+        for (const q of queries) {
+          const batch = await scrapeGitHubBios(q);
+          leads.push(...batch);
+        }
       } else if (target.type === 'hackernews' || target.url?.includes('news.ycombinator.com')) {
         leads = await scrapeHackerNews(target.query || '');
       } else if (target.type === 'gitlab' || target.url?.includes('gitlab.com')) {
@@ -355,10 +420,13 @@ export async function scrapeLeads(targets = []) {
     }
   }
 
-  // If no targets configured, run a demo GitHub scrape
+  // If no targets configured, sample 3 random queries from the pool
   if (targets.length === 0) {
-    const demo = await scrapeGitHubBios('developer location:India followers:>10');
-    allLeads.push(...demo);
+    const queries = pickRandomQueries(GITHUB_QUERY_POOL, 3);
+    for (const q of queries) {
+      const batch = await scrapeGitHubBios(q);
+      allLeads.push(...batch);
+    }
   }
 
   // Deduplicate within this batch (by email)
