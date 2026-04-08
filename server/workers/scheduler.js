@@ -244,13 +244,11 @@ async function runEnrichmentSweep() {
   const config = readConfig();
 
   try {
-    // Find leads with no enrichment yet, limit to 20 per sweep so Ollama isn't
-    // swamped and the hour gap prevents pile-up.
-    // Skip leads that have already failed 3 times — they need manual review
+    // Find all unenriched leads — no attempt cap, no batch limit.
     const pending = await db.all(
       `SELECT * FROM leads WHERE (enriched_at IS NULL OR enriched_at = '')
-       AND email != '' AND enrichment_attempts < 3
-       ORDER BY created_at DESC LIMIT 20`,
+       AND email != ''
+       ORDER BY created_at DESC`,
     );
 
     if (!pending.length) {
@@ -277,7 +275,6 @@ async function runEnrichmentSweep() {
     }
 
     // Increment enrichment_attempts for any lead that still failed after this sweep.
-    // After 3 failures the lead is excluded from future sweeps (needs manual review).
     const enrichedEmails = new Set(refined.filter((l) => l.enriched_at).map((l) => l.email));
     for (const lead of pending) {
       if (!enrichedEmails.has(lead.email)) {

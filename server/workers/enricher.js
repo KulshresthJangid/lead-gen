@@ -6,9 +6,8 @@ import { logAiEvent } from '../utils/aiLogger.js';
 // Per-lead prompts are short enough that Mistral never hits the token cap.
 const BATCH_SIZE = 1;
 
-// Max output tokens. Single lead ≈ 300 tokens; 4096 is well above that.
-// If done_reason === 'length' the model was still cut off — we detect and repair.
-const NUM_PREDICT = 4096;
+// -1 = no token limit. Local Ollama can run as long as needed.
+const NUM_PREDICT = -1;
 
 function buildSystemPrompt(config = {}) {
   const product = config.product_description
