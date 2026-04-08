@@ -6,14 +6,15 @@ import { format } from 'date-fns';
 
 export default function LeadRow({ lead, onCategorize, isNew = false }) {
   const [expanded, setExpanded] = useState(false);
-  const highlightClass = isNew
-    ? 'bg-violet-500/10 ring-1 ring-violet-500/30 animate-fade-out'
-    : '';
+  const highlightClass = isNew ? 'animate-fade-out' : '';
 
   return (
     <>
       <tr
-        className={`border-b border-white/[0.05] hover:bg-white/[0.04] transition-colors ${highlightClass}`}
+        className={`transition-colors ${highlightClass}`}
+        style={{ borderBottom: '1px solid var(--border)' }}
+        onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--hover)'; }}
+        onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = ''; }}
       >
         <td className="px-4 py-3 min-w-[180px]">
           <div className="font-medium text-gray-900 truncate max-w-[200px]">
@@ -32,7 +33,8 @@ export default function LeadRow({ lead, onCategorize, isNew = false }) {
         <td className="px-4 py-3 text-sm text-gray-700 max-w-[200px]">
           <a
             href={`mailto:${lead.email}`}
-            className="text-violet-400 hover:text-violet-300 hover:underline truncate block"
+            className="hover:underline truncate block"
+            style={{ color: 'var(--text-1)' }}
           >
             {lead.email}
           </a>
@@ -55,21 +57,24 @@ export default function LeadRow({ lead, onCategorize, isNew = false }) {
           <div className="flex items-center gap-2">
             <button
               onClick={() => onCategorize(lead)}
-              className="p-1.5 rounded-lg text-violet-400 hover:bg-violet-500/15 transition-colors"
+              className="p-1.5 rounded-lg transition-colors"
+              style={{ color: 'var(--text-2)' }}
               title="Categorize"
             >
               <Tag className="w-4 h-4" />
             </button>
             <Link
               to={`/leads/${lead.id}`}
-              className="p-1.5 rounded-lg text-slate-500 hover:bg-white/[0.06] hover:text-slate-300 transition-colors"
+              className="p-1.5 rounded-lg transition-colors"
+              style={{ color: 'var(--text-3)' }}
               title="View details"
             >
               <ExternalLink className="w-4 h-4" />
             </Link>
             <button
               onClick={() => setExpanded((v) => !v)}
-              className="p-1.5 rounded-lg text-slate-600 hover:bg-white/[0.06] hover:text-slate-400 transition-colors"
+              className="p-1.5 rounded-lg transition-colors"
+              style={{ color: 'var(--text-3)' }}
             >
               {expanded ? (
                 <ChevronUp className="w-4 h-4" />
