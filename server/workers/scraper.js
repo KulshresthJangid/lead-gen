@@ -114,6 +114,103 @@ async function scrapeGitHubBios(query = 'developer') {
   return leads;
 }
 
+// ── HackerNews "Who wants to be hired?" adapter ───────────────────────────────
+// Fetches the latest monthly thread and parses comments for emails + context.
+async function scrapeHackerNews(keywordFilter = '') {
+  const leads = [];
+  try {
+    // Search for the latest "Ask HN: Who wants to be hired?" thread
+    const searchRes = await throttledGet(
+      'https://hn.algolia.com/api/v1/search?query=who+wants+to+be+hired&tags=ask_hn&hitsPerPage=1',
+    );
+    const story = searchRes.data?.hits?.[0];
+    if (!story) return leads;
+
+    const storyId = story.objectID;
+    // Fetch all comments for this story
+    const storyRes = await throttledGet(
+      `https://hn.algolia.com/api/v1/items/${storyId}`,
+    );
+    const comments = storyRes.data?.children || [];
+
+    const emailRegex = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
+
+    for (const comment of comments.slice(0, 100)) {
+      const text = comment.text || '';
+      if (!text) continue;
+      if (keywordFilter && !text.toLowerCase().includes(keywordFilter.toLowerCase())) continue;
+
+      const emails = text.match(emailRegex) || [];
+      if (!emails.length) continue;
+
+      // Parse structured fields from the comment (most follow a loose convention)
+      const locationMatch = text.match(/Location:\s*([^\n|<]+)/i);
+      const remoteMatch   = text.match(/Remote:\s*([^\n|<]+)/i);
+      const techsMatch    = text.match(/(?:Tech(?:nologies)?|Stack):\s*([^\n|<]+)/i);
+
+      for (const email of emails) {
+        if (!isValidEmail(email)) continue;
+        leads.push({
+          full_name: comment.author || '',
+          job_title: techsMatch ? techsMatch[1].trim().slice(0, 80) : '',
+          company_name: '',
+          company_domain: '',
+          email,
+          linkedin_url: '',
+          location: locationMatch ? locationMatch[1].trim() : remoteMatch ? remoteMatch[1].trim() : '',
+          source: 'hackernews',
+        });
+        break; // one lead per comment (take first valid email)
+      }
+    }
+
+    logger.info({ source: 'hackernews', storyId, found: leads.length }, 'HN scrape complete');
+  } catch (err) {
+    logger.error({ err: err.message }, 'HackerNews scrape failed');
+  }
+  return leads;
+}
+
+// ── GitLab adapter (public API, no token needed) ──────────────────────────────
+async function scrapeGitLab(query = 'developer') {
+  const leads = [];
+  try {
+    const searchRes = await throttledGet('https://gitlab.com/api/v4/users', {
+      params: { search: query, per_page: 20 },
+    });
+
+    const users = searchRes.data || [];
+
+    for (const user of users) {
+      try {
+        await delay(300);
+        const userRes = await throttledGet(`https://gitlab.com/api/v4/users/${user.id}`);
+        const u = userRes.data;
+
+        if (isValidEmail(u.public_email || '')) {
+          leads.push({
+            full_name: u.name || u.username,
+            job_title: u.job_title || '',
+            company_name: u.organization || '',
+            company_domain: extractDomain(u.website_url || ''),
+            email: u.public_email,
+            linkedin_url: '',
+            location: u.location || '',
+            source: 'gitlab',
+          });
+        }
+      } catch (err) {
+        logger.warn({ username: user.username, err: err.message }, 'Failed to fetch GitLab user');
+      }
+    }
+
+    logger.info({ source: 'gitlab', query, found: leads.length }, 'GitLab scrape complete');
+  } catch (err) {
+    logger.error({ err: err.message }, 'GitLab scrape failed');
+  }
+  return leads;
+}
+
 // ── Custom URL adapter (driven by config selector map) ────────────────────────
 async function scrapeCustomUrl(url, selectors = {}) {
   const leads = [];
@@ -178,8 +275,12 @@ export async function scrapeLeads(targets = []) {
   for (const target of targets) {
     try {
       let leads = [];
-      if (target.type === 'github' || target.url?.includes('github')) {
+      if (target.type === 'github' || target.url?.includes('github.com')) {
         leads = await scrapeGitHubBios(target.query || 'developer location:India followers:>10');
+      } else if (target.type === 'hackernews' || target.url?.includes('news.ycombinator.com')) {
+        leads = await scrapeHackerNews(target.query || '');
+      } else if (target.type === 'gitlab' || target.url?.includes('gitlab.com')) {
+        leads = await scrapeGitLab(target.query || 'developer');
       } else if (target.url) {
         leads = await scrapeCustomUrl(target.url, target.selectors || {});
       }

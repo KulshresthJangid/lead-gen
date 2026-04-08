@@ -233,17 +233,34 @@ export default function Settings() {
                     value={target.name}
                     onChange={(e) => updateTarget(i, 'name', e.target.value)}
                   />
-                  <input
-                    type="url"
+                  <select
                     className="input py-1.5 text-sm"
-                    placeholder="https://example.com/team"
-                    value={target.url}
-                    onChange={(e) => updateTarget(i, 'url', e.target.value)}
-                  />
+                    value={target.type || 'github'}
+                    onChange={(e) => {
+                      const type = e.target.value;
+                      const urlMap = { github: 'https://github.com', gitlab: 'https://gitlab.com', hackernews: 'https://news.ycombinator.com', custom: '' };
+                      updateTarget(i, 'type', type);
+                      updateTarget(i, 'url', urlMap[type] ?? '');
+                    }}
+                  >
+                    <option value="github">GitHub</option>
+                    <option value="gitlab">GitLab</option>
+                    <option value="hackernews">HackerNews (Who wants to be hired?)</option>
+                    <option value="custom">Custom URL</option>
+                  </select>
+                  {(target.type === 'custom' || (!target.type && target.url && !['https://github.com','https://gitlab.com','https://news.ycombinator.com'].includes(target.url))) && (
+                    <input
+                      type="url"
+                      className="input py-1.5 text-sm sm:col-span-2"
+                      placeholder="https://example.com/team"
+                      value={target.url}
+                      onChange={(e) => updateTarget(i, 'url', e.target.value)}
+                    />
+                  )}
                   <input
                     type="text"
                     className="input py-1.5 text-sm sm:col-span-2"
-                    placeholder="GitHub query (e.g. founder email:true location:India)"
+                    placeholder={target.type === 'hackernews' ? 'Keyword filter (e.g. India, React, remote) — leave blank for all' : 'Search query (e.g. founder location:India followers:>5)'}
                     value={target.query || ''}
                     onChange={(e) => updateTarget(i, 'query', e.target.value)}
                   />
