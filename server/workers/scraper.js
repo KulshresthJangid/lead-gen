@@ -67,53 +67,98 @@ function githubHeaders() {
 
 // ── Large query pool — sampled randomly each run so continuous mode never repeats ──
 const GITHUB_QUERY_POOL = [
-  // Founders / CTOs
+  // ── India: Founders / CTOs ──
   'founder location:India followers:>5',
   'founder location:India followers:>10',
-  'founder location:India repos:>5',
   'CTO location:India followers:>5',
   'CTO location:India repos:>10',
   'cofounder location:India followers:>5',
-  '"startup" location:India followers:>10',
-  // Engineers by city
+  'startup location:India followers:>10',
+  // ── India: Engineers by city ──
   'developer location:Bangalore followers:>5',
-  'developer location:Bangalore followers:>20',
-  'engineer location:Bangalore repos:>10',
   'developer location:Mumbai followers:>5',
-  'engineer location:Mumbai repos:>5',
   'developer location:Delhi followers:>5',
   'developer location:Hyderabad followers:>5',
   'developer location:Pune followers:>5',
   'developer location:Chennai followers:>5',
-  'developer location:Kolkata followers:>5',
-  'developer location:Ahmedabad followers:>5',
-  // By specialty
+  // ── India: Specialty ──
   'fullstack developer location:India followers:>5',
-  'backend developer location:India followers:>10',
-  'frontend developer location:India followers:>5',
   'machine learning location:India followers:>5',
   'AI engineer location:India followers:>5',
   'devops location:India repos:>10',
-  'SaaS location:India followers:>10',
-  'fintech location:India followers:>5',
-  'open source location:India followers:>20',
-  'open source location:India followers:>50',
-  // Broader India engineering
-  'software engineer location:India repos:>15',
-  'software engineer location:India followers:>15',
-  'startup engineer location:India followers:>10',
-  'startup engineer location:India followers:>15',
-  'startup engineer location:India followers:>20',
-  'developer India repos:>20 followers:>5',
-  'developer India repos:>30',
-  // Remote / freelance signals
   'freelance developer location:India followers:>5',
-  'independent developer location:India repos:>10',
   'consultant location:India followers:>10',
-  // Product / growth roles
-  'product manager location:India followers:>5',
-  'growth hacker location:India followers:>5',
   '"building in public" location:India followers:>5',
+
+  // ── USA ──
+  'founder location:"United States" SaaS followers:>10',
+  'CTO location:"United States" startup followers:>10',
+  'cofounder location:"United States" followers:>10',
+  'developer location:"San Francisco" followers:>10',
+  'developer location:"New York" followers:>10',
+  'developer location:"Austin" followers:>5',
+  'freelance developer location:"United States" followers:>5',
+  'fullstack developer location:"United States" followers:>10',
+  'AI engineer location:"United States" followers:>10',
+  'startup location:"United States" repos:>10',
+  '"looking for developers" location:"United States" followers:>5',
+
+  // ── UK ──
+  'founder location:"United Kingdom" startup followers:>5',
+  'CTO location:"United Kingdom" followers:>5',
+  'developer location:London followers:>5',
+  'freelance developer location:"United Kingdom" followers:>5',
+  'startup location:"United Kingdom" repos:>10',
+
+  // ── Europe ──
+  'founder location:Germany startup followers:>5',
+  'developer location:Berlin followers:>5',
+  'founder location:Netherlands startup followers:>5',
+  'developer location:Amsterdam followers:>5',
+  'founder location:France startup followers:>5',
+  'developer location:Paris followers:>5',
+  'founder location:Spain startup followers:>5',
+  'founder location:Poland startup followers:>5',
+  'developer location:Warsaw followers:>5',
+
+  // ── Southeast Asia / APAC ──
+  'founder location:Singapore startup followers:>5',
+  'developer location:Singapore followers:>5',
+  'founder location:Australia startup followers:>5',
+  'developer location:Sydney followers:>5',
+  'developer location:Melbourne followers:>5',
+  'founder location:"Hong Kong" followers:>5',
+  'founder location:Philippines startup followers:>5',
+
+  // ── Latin America ──
+  'founder location:Brazil startup followers:>5',
+  'developer location:"São Paulo" followers:>5',
+  'founder location:Mexico startup followers:>5',
+  'developer location:"Mexico City" followers:>5',
+  'founder location:Argentina startup followers:>5',
+
+  // ── Middle East / Africa ──
+  'founder location:"United Arab Emirates" startup followers:>5',
+  'developer location:Dubai followers:>5',
+  'founder location:Nigeria startup followers:>5',
+  'developer location:Lagos followers:>5',
+  'founder location:Kenya startup followers:>5',
+
+  // ── Global: people hiring / building ──
+  'hiring developers followers:>10',
+  '"contract developer" followers:>5',
+  '"looking for developers" followers:>5',
+  '"building a startup" followers:>10',
+  'SaaS founder followers:>10',
+  'bootstrapped founder followers:>10',
+  'indie hacker followers:>10',
+  '"open to work" developer followers:>5',
+  'freelance developer followers:>10 repos:>10',
+  'fullstack developer followers:>20',
+  'software consultant followers:>10',
+  'AI startup founder followers:>5',
+  'product engineer followers:>10',
+  'tech lead followers:>10 repos:>10',
 ];
 
 function pickRandomQueries(pool, n = 3) {
@@ -174,11 +219,11 @@ async function scrapeGitHubBios(query = 'developer') {
 }
 
 // ── HackerNews "Who wants to be hired?" adapter ───────────────────────────────
-// Fetches the latest monthly thread and parses comments for emails + context.
+// Fetches the latest monthly thread and parses ALL comments (paginated) for emails.
 async function scrapeHackerNews(keywordFilter = '') {
   const leads = [];
   try {
-    // Search for the latest "Ask HN: Who wants to be hired?" thread — sort by date so we get the most recent one.
+    // Sort by date so we always get the current month's thread
     const searchRes = await throttledGet(
       'https://hn.algolia.com/api/v1/search_by_date?query=who+wants+to+be+hired&tags=ask_hn&hitsPerPage=1',
     );
@@ -186,32 +231,39 @@ async function scrapeHackerNews(keywordFilter = '') {
     if (!story) return leads;
 
     const storyId = story.objectID;
-    // Fetch all comments for this story
-    const storyRes = await throttledGet(
-      `https://hn.algolia.com/api/v1/items/${storyId}`,
-    );
-    const comments = storyRes.data?.children || [];
+
+    // Algolia paginates comments — fetch up to 3 pages of 200 to get ~600 comments
+    let comments = [];
+    for (let page = 0; page < 3; page++) {
+      const pageRes = await throttledGet(
+        `https://hn.algolia.com/api/v1/search?tags=comment,story_${storyId}&hitsPerPage=200&page=${page}`,
+      );
+      const hits = pageRes.data?.hits || [];
+      if (!hits.length) break;
+      comments.push(...hits);
+      if (hits.length < 200) break;
+    }
 
     const emailRegex = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
 
-    for (const comment of comments.slice(0, 100)) {
-      const text = comment.text || '';
+    for (const comment of comments) {
+      const text = (comment.comment_text || comment.text || '').replace(/<[^>]+>/g, ' ');
       if (!text) continue;
       if (keywordFilter && !text.toLowerCase().includes(keywordFilter.toLowerCase())) continue;
 
       const emails = text.match(emailRegex) || [];
       if (!emails.length) continue;
 
-      // Parse structured fields from the comment (most follow a loose convention)
       const locationMatch = text.match(/Location:\s*([^\n|<]+)/i);
       const remoteMatch   = text.match(/Remote:\s*([^\n|<]+)/i);
       const techsMatch    = text.match(/(?:Tech(?:nologies)?|Stack):\s*([^\n|<]+)/i);
+      const roleMatch     = text.match(/(?:Role|Title|Position|Seeking):\s*([^\n|<]+)/i);
 
       for (const email of emails) {
         if (!isValidEmail(email)) continue;
         leads.push({
           full_name: comment.author || '',
-          job_title: techsMatch ? techsMatch[1].trim().slice(0, 80) : '',
+          job_title: roleMatch ? roleMatch[1].trim().slice(0, 80) : techsMatch ? techsMatch[1].trim().slice(0, 80) : '',
           company_name: '',
           company_domain: '',
           email,
