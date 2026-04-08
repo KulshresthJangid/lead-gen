@@ -7,13 +7,13 @@ import { format } from 'date-fns';
 export default function LeadRow({ lead, onCategorize, isNew = false }) {
   const [expanded, setExpanded] = useState(false);
   const highlightClass = isNew
-    ? 'bg-yellow-50 ring-1 ring-yellow-300 animate-fade-out'
-    : 'bg-white';
+    ? 'bg-violet-500/10 ring-1 ring-violet-500/30 animate-fade-out'
+    : '';
 
   return (
     <>
       <tr
-        className={`border-b border-gray-100 hover:bg-gray-50 transition-colors ${highlightClass}`}
+        className={`border-b border-white/[0.05] hover:bg-white/[0.04] transition-colors ${highlightClass}`}
       >
         <td className="px-4 py-3 min-w-[180px]">
           <div className="font-medium text-gray-900 truncate max-w-[200px]">
@@ -32,7 +32,7 @@ export default function LeadRow({ lead, onCategorize, isNew = false }) {
         <td className="px-4 py-3 text-sm text-gray-700 max-w-[200px]">
           <a
             href={`mailto:${lead.email}`}
-            className="text-indigo-600 hover:underline truncate block"
+            className="text-violet-400 hover:text-violet-300 hover:underline truncate block"
           >
             {lead.email}
           </a>
@@ -55,21 +55,21 @@ export default function LeadRow({ lead, onCategorize, isNew = false }) {
           <div className="flex items-center gap-2">
             <button
               onClick={() => onCategorize(lead)}
-              className="p-1.5 rounded text-indigo-600 hover:bg-indigo-50 transition-colors"
+              className="p-1.5 rounded-lg text-violet-400 hover:bg-violet-500/15 transition-colors"
               title="Categorize"
             >
               <Tag className="w-4 h-4" />
             </button>
             <Link
               to={`/leads/${lead.id}`}
-              className="p-1.5 rounded text-gray-500 hover:bg-gray-100 transition-colors"
+              className="p-1.5 rounded-lg text-slate-500 hover:bg-white/[0.06] hover:text-slate-300 transition-colors"
               title="View details"
             >
               <ExternalLink className="w-4 h-4" />
             </Link>
             <button
               onClick={() => setExpanded((v) => !v)}
-              className="p-1.5 rounded text-gray-400 hover:bg-gray-100 transition-colors"
+              className="p-1.5 rounded-lg text-slate-600 hover:bg-white/[0.06] hover:text-slate-400 transition-colors"
             >
               {expanded ? (
                 <ChevronUp className="w-4 h-4" />

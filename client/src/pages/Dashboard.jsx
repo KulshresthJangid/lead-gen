@@ -36,9 +36,9 @@ export default function Dashboard() {
     <div className="space-y-5">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
-          <p className="text-sm text-gray-500 mt-0.5">
-            {data?.total != null ? `${data.total.toLocaleString()} leads` : 'Loading…'}
+          <h1 className="text-2xl font-black gradient-text">Dashboard</h1>
+          <p className="text-sm text-slate-500 mt-0.5">
+            {data?.total != null ? `${data.total.toLocaleString()} leads collected` : 'Loading…'}
           </p>
         </div>
         <ExportButton filters={filters} />

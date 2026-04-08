@@ -16,6 +16,7 @@ import statsRouter from './routes/stats.js';
 import pipelineRouter from './routes/pipeline.js';
 import settingsRouter from './routes/settings.js';
 import authRouter from './routes/auth.js';
+import aiLogsRouter from './routes/ai-logs.js';
 import { requireAuth } from './middleware/authMiddleware.js';
 import { initScheduler } from './workers/scheduler.js';
 import logger from './utils/logger.js';
@@ -46,6 +47,7 @@ app.use('/api/leads',    requireAuth, leadsRouter);
 app.use('/api/stats',    requireAuth, statsRouter);
 app.use('/api/pipeline', requireAuth, pipelineRouter);
 app.use('/api/settings', requireAuth, settingsRouter);
+app.use('/api/ai-logs',  requireAuth, aiLogsRouter);
 
 // ── Static (production) ───────────────────────────────────────────────────────
 if (process.env.NODE_ENV === 'production') {
