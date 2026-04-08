@@ -222,5 +222,61 @@ export function initScheduler(io) {
   ioInstance = io;
   const config = readConfig();
   reschedule(parseInt(config.scraping_interval || '30', 10));
+  startEnrichmentCron();
   logger.info('Scheduler initialized');
+}
+
+// ── Hourly enrichment cron ────────────────────────────────────────────────────
+// Picks up any leads that were inserted but never enriched (e.g. Ollama was
+// offline, or the pipeline run finished before enrichment could complete).
+let enrichmentCronTask = null;
+
+async function runEnrichmentSweep() {
+  const db = getDb();
+  const config = readConfig();
+
+  try {
+    // Find leads with no enrichment yet, limit to 20 per sweep so Ollama isn't
+    // swamped and the hour gap prevents pile-up.
+    const pending = await db.all(
+      `SELECT * FROM leads WHERE (enriched_at IS NULL OR enriched_at = '')
+       AND email != '' ORDER BY created_at DESC LIMIT 20`,
+    );
+
+    if (!pending.length) {
+      logger.info('[ENRICH-CRON] No pending leads to enrich');
+      return;
+    }
+
+    logger.info({ count: pending.length }, '[ENRICH-CRON] Starting enrichment sweep');
+
+    const enriched = await enrichBatch(pending, config, ioInstance);
+    const refined  = await refineOutreach(enriched, config);
+
+    const updateStmt = `UPDATE leads SET pain_points=?, reason_for_outreach=?, lead_quality=?,
+      confidence_score=?, enriched_at=?, status=? WHERE email=?`;
+
+    for (const lead of refined) {
+      if (lead.enriched_at) {
+        await db.run(updateStmt, [
+          lead.pain_points || '', lead.reason_for_outreach || '',
+          lead.lead_quality || null, lead.confidence_score || null,
+          lead.enriched_at, lead.status || 'enriched', lead.email,
+        ]);
+      }
+    }
+
+    const done = refined.filter((l) => l.enriched_at).length;
+    logger.info({ done }, '[ENRICH-CRON] Sweep complete');
+    if (done > 0) ioInstance?.emit('leads_enriched', { count: done });
+  } catch (err) {
+    logger.error({ err: err.message }, '[ENRICH-CRON] Sweep failed');
+  }
+}
+
+function startEnrichmentCron() {
+  if (enrichmentCronTask) enrichmentCronTask.stop();
+  // Run at minute 0 of every hour
+  enrichmentCronTask = cron.schedule('0 * * * *', runEnrichmentSweep);
+  logger.info('[ENRICH-CRON] Hourly enrichment cron started');
 }
