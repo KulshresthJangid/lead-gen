@@ -90,7 +90,7 @@ export default function LeadDetail() {
     );
   }
 
-  const isEnriched = !!lead.enriched_at;
+  const isEnriched = !!(lead.enriched_at || lead.pain_points || lead.reason_for_outreach);
 
   return (
     <div className="max-w-4xl space-y-6 animate-slide-up">
