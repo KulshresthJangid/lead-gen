@@ -68,8 +68,11 @@ function githubHeaders() {
 async function scrapeGitHubBios(query = 'developer') {
   const leads = [];
   try {
+    // Rotate through pages so continuous runs don't return the same users every time.
+    // GitHub allows pages 1–34 (max 1000 results at per_page=30).
+    const page = Math.floor(Math.random() * 10) + 1;
     const searchRes = await throttledGet('https://api.github.com/search/users', {
-      params: { q: query, per_page: 30, type: 'Users' },
+      params: { q: query, per_page: 30, page, type: 'Users' },
       headers: githubHeaders(),
     });
 
@@ -119,9 +122,9 @@ async function scrapeGitHubBios(query = 'developer') {
 async function scrapeHackerNews(keywordFilter = '') {
   const leads = [];
   try {
-    // Search for the latest "Ask HN: Who wants to be hired?" thread
+    // Search for the latest "Ask HN: Who wants to be hired?" thread — sort by date so we get the most recent one.
     const searchRes = await throttledGet(
-      'https://hn.algolia.com/api/v1/search?query=who+wants+to+be+hired&tags=ask_hn&hitsPerPage=1',
+      'https://hn.algolia.com/api/v1/search_by_date?query=who+wants+to+be+hired&tags=ask_hn&hitsPerPage=1',
     );
     const story = searchRes.data?.hits?.[0];
     if (!story) return leads;
