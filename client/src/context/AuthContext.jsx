@@ -17,7 +17,7 @@ export function AuthProvider({ children }) {
       return;
     }
     apiClient
-      .post('/auth/verify', null, {
+      .post('/auth/verify', {}, {
         headers: { Authorization: `Bearer ${token}` },
       })
       .then(({ data }) => setAuthenticated(data.valid === true))
