@@ -5,7 +5,8 @@ import CategoryBadge from './CategoryBadge.jsx';
 import { format } from 'date-fns';
 
 export default function LeadRow({ lead, onCategorize, isNew = false }) {
-  const [expanded, setExpanded] = useState(false);
+  const hasEnrichment = !!(lead.pain_points || lead.reason_for_outreach);
+  const [expanded, setExpanded] = useState(hasEnrichment);
   const highlightClass = isNew ? 'animate-fade-out' : '';
 
   return (
@@ -73,13 +74,20 @@ export default function LeadRow({ lead, onCategorize, isNew = false }) {
             </Link>
             <button
               onClick={() => setExpanded((v) => !v)}
-              className="p-1.5 rounded-lg transition-colors"
-              style={{ color: 'var(--text-3)' }}
+              className="p-1.5 rounded-lg transition-colors relative"
+              style={{ color: hasEnrichment ? 'var(--text-1)' : 'var(--text-3)' }}
+              title={hasEnrichment ? 'Show AI enrichment' : 'No enrichment yet'}
             >
               {expanded ? (
                 <ChevronUp className="w-4 h-4" />
               ) : (
                 <ChevronDown className="w-4 h-4" />
+              )}
+              {hasEnrichment && !expanded && (
+                <span
+                  className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full"
+                  style={{ backgroundColor: 'var(--text-1)' }}
+                />
               )}
             </button>
           </div>
