@@ -2,13 +2,13 @@ import axios from 'axios';
 import logger from '../utils/logger.js';
 import { logAiEvent } from '../utils/aiLogger.js';
 
-// Mistral 7B produces incomplete JSON when given too many leads at once.
-// Batch of 2 keeps the output well within its context window.
-const BATCH_SIZE = 2;
+// One lead per batch: simplest way to prevent output truncation.
+// Per-lead prompts are short enough that Mistral never hits the token cap.
+const BATCH_SIZE = 1;
 
-// Max output tokens. Mistral 7B: 2 leads ≈ 600 tokens output, 2048 is safe.
-// If done_reason === 'length' the model was cut off — we detect and repair.
-const NUM_PREDICT = 2048;
+// Max output tokens. Single lead ≈ 300 tokens; 4096 is well above that.
+// If done_reason === 'length' the model was still cut off — we detect and repair.
+const NUM_PREDICT = 4096;
 
 function buildSystemPrompt(config = {}) {
   const product = config.product_description
