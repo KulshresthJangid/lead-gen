@@ -211,6 +211,66 @@ async function scrapeGitLab(query = 'developer') {
   return leads;
 }
 
+// ── Google Custom Search adapter ─────────────────────────────────────────────
+// Needs: GOOGLE_CSE_KEY (API key) + GOOGLE_CSE_CX (Search Engine ID)
+async function scrapeGoogle(query = 'site:linkedin.com/in founder India SaaS') {
+  const leads = [];
+  const key = process.env.GOOGLE_CSE_KEY;
+  const cx  = process.env.GOOGLE_CSE_CX;
+
+  if (!key || !cx) {
+    logger.warn('Google CSE skipped — GOOGLE_CSE_KEY or GOOGLE_CSE_CX not set in .env');
+    return leads;
+  }
+
+  try {
+    // Google CSE allows max 10 results per request; use start=1,11,21 for up to 30
+    for (let start = 1; start <= 21; start += 10) {
+      const res = await throttledGet('https://www.googleapis.com/customsearch/v1', {
+        params: { key, cx, q: query, num: 10, start },
+      });
+
+      const items = res.data?.items || [];
+      if (!items.length) break;
+
+      for (const item of items) {
+        const link = item.link || '';
+        const title = item.title || '';
+        const snippet = item.snippet || '';
+
+        // Extract email from snippet if present
+        const emailMatch = snippet.match(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/);
+
+        // Infer name: Google title for LinkedIn is usually "FirstName LastName - Title | LinkedIn"
+        const namePart = title.split(/[-|–]/)[0].trim();
+        const titlePart = title.split(/[-|–]/)[1]?.split(/[|·]/)[0]?.trim() || '';
+
+        leads.push({
+          full_name: namePart,
+          job_title: titlePart,
+          company_name: '',
+          company_domain: '',
+          email: isValidEmail(emailMatch?.[0] || '') ? emailMatch[0] : '',
+          linkedin_url: link.includes('linkedin.com/in') ? link : '',
+          location: '',
+          source: 'google',
+        });
+      }
+
+      if (items.length < 10) break; // no more pages
+    }
+
+    logger.info({ source: 'google', query, found: leads.length }, 'Google CSE scrape complete');
+  } catch (err) {
+    if (err.response?.status === 429) {
+      logger.warn('Google CSE daily quota (100 queries) exceeded');
+    } else {
+      logger.error({ err: err.message }, 'Google CSE scrape failed');
+    }
+  }
+  return leads;
+}
+
 // ── Custom URL adapter (driven by config selector map) ────────────────────────
 async function scrapeCustomUrl(url, selectors = {}) {
   const leads = [];
@@ -281,6 +341,8 @@ export async function scrapeLeads(targets = []) {
         leads = await scrapeHackerNews(target.query || '');
       } else if (target.type === 'gitlab' || target.url?.includes('gitlab.com')) {
         leads = await scrapeGitLab(target.query || 'developer');
+      } else if (target.type === 'google') {
+        leads = await scrapeGoogle(target.query || 'site:linkedin.com/in founder India SaaS');
       } else if (target.url) {
         leads = await scrapeCustomUrl(target.url, target.selectors || {});
       }
