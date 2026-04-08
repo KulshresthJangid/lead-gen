@@ -85,6 +85,33 @@ else
   log ".env already exists at ${ENV_FILE} — skipping (delete to regenerate)"
 fi
 
+# ── Step 3b: config.json — seed if missing ────────────────────────────────────
+CONFIG_FILE="${PROJECT_DIR}/config.json"
+if [ ! -f "${CONFIG_FILE}" ]; then
+  log "config.json not found — creating with is_setup_complete=true"
+  cat > "${CONFIG_FILE}" <<EOF
+{
+  "is_setup_complete": "true",
+  "ollama_endpoint": "http://localhost:11434",
+  "ollama_model": "mistral",
+  "scraping_interval": "30"
+}
+EOF
+  log "config.json created at ${CONFIG_FILE}"
+else
+  # Ensure is_setup_complete is set to true (in case it was missing)
+  if ! grep -q '"is_setup_complete"' "${CONFIG_FILE}"; then
+    log "Patching config.json — adding is_setup_complete=true"
+    node -e "
+      const fs=require('fs');
+      const c=JSON.parse(fs.readFileSync('${CONFIG_FILE}','utf8'));
+      c.is_setup_complete='true';
+      fs.writeFileSync('${CONFIG_FILE}',JSON.stringify(c,null,2));
+    "
+  fi
+  log "config.json already exists at ${CONFIG_FILE} — skipping"
+fi
+
 # ── Step 4: Backend — PM2 start / reload ─────────────────────────────────────
 section "Backend — PM2 process management"
 if command -v pm2 >/dev/null 2>&1; then
