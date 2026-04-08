@@ -40,7 +40,7 @@ async function callOllama(endpoint, model, prompt) {
   const response = await axios.post(
     `${endpoint}/api/generate`,
     { model, prompt, stream: false },
-    { timeout: 120_000 },
+    { timeout: 0 },  // no timeout — Mistral on CPU can take several minutes per batch
   );
   return response.data.response || '';
 }
