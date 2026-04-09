@@ -38,6 +38,7 @@ export default function Settings() {
         ollama_endpoint: config.ollama_endpoint || 'http://localhost:11434',
         ollama_model: config.ollama_model || 'mistral',
         scraping_interval: config.scraping_interval || '30',
+        daily_lead_target: config.daily_lead_target ?? 0,
         product_description: config.product_description || '',
         icp_description: config.icp_description || '',
         scraper_targets: Array.isArray(config.scraper_targets)
@@ -194,19 +195,41 @@ export default function Settings() {
 
       {/* Scraper */}
       <Section title="Scraper Config" desc="Target URLs and schedule for the automated lead pipeline.">
-        <div>
-          <label className="label">Scraping Interval</label>
-          <select
-            className="input w-48"
-            value={form.scraping_interval}
-            onChange={(e) => updateForm('scraping_interval', e.target.value)}
-          >
-            <option value="0">Continuous (run back-to-back)</option>
-            <option value="15">Every 15 min</option>
-            <option value="30">Every 30 min</option>
-            <option value="60">Every hour</option>
-            <option value="360">Every 6 hours</option>
-          </select>
+        <div className="flex flex-wrap gap-4">
+          <div>
+            <label className="label">Scraping Interval</label>
+            <select
+              className="input w-48"
+              value={form.scraping_interval}
+              onChange={(e) => updateForm('scraping_interval', e.target.value)}
+            >
+              <option value="0">Continuous (run back-to-back)</option>
+              <option value="15">Every 15 min</option>
+              <option value="30">Every 30 min</option>
+              <option value="60">Every hour</option>
+              <option value="360">Every 6 hours</option>
+            </select>
+          </div>
+          <div>
+            <label className="label">Daily Lead Target</label>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min="0"
+                max="100000"
+                step="10"
+                className="input w-32"
+                value={form.daily_lead_target}
+                onChange={(e) => updateForm('daily_lead_target', Number(e.target.value))}
+              />
+              <span className="text-xs text-gray-400">leads/day (0 = unlimited)</span>
+            </div>
+            {form.scraping_interval === '0' && form.daily_lead_target > 0 && (
+              <p className="text-xs text-blue-600 mt-1">
+                Continuous mode will pause when {form.daily_lead_target} leads are collected and resume at midnight UTC.
+              </p>
+            )}
+          </div>
         </div>
 
         <div>

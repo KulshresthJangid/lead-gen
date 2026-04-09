@@ -39,6 +39,9 @@ export default function PipelineStatusBar() {
   const status = liveStatus === 'running' ? 'running' : (data?.status || 'idle');
   const ollamaOnline = data?.ollamaOnline ?? null;
   const isRunning = status === 'running';
+  const targetReached = status === 'target_reached';
+  const todayInserted = data?.todayInserted ?? 0;
+  const dailyTarget = data?.dailyTarget ?? 0;
 
   return (
     <div
@@ -54,11 +57,17 @@ export default function PipelineStatusBar() {
           <StatusDot status={status} />
           <span
             className="font-semibold uppercase tracking-wider text-[11px]"
-            style={{ color: isRunning ? 'var(--text-1)' : 'var(--text-3)' }}
+            style={{ color: isRunning ? 'var(--text-1)' : targetReached ? '#f59e0b' : 'var(--text-3)' }}
           >
-            {isRunning ? 'Running' : 'Idle'}
+            {isRunning ? 'Running' : targetReached ? 'Target Reached' : 'Idle'}
           </span>
         </div>
+
+        {dailyTarget > 0 && (
+          <span className="hidden sm:inline font-mono" style={{ color: targetReached ? '#f59e0b' : 'var(--text-3)' }}>
+            {todayInserted}/{dailyTarget} today
+          </span>
+        )}
 
         {data?.lastRunAt && (
           <span className="hidden sm:inline" style={{ color: 'var(--text-3)' }}>

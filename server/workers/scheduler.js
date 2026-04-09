@@ -16,6 +16,8 @@ const pipelineState = {
   nextRunAt: null,
   status: 'idle',
   lastRunStats: null,
+  todayInserted: 0,
+  dailyTarget: 0,
 };
 
 // ── Pipeline runner ───────────────────────────────────────────────────────────
@@ -187,10 +189,66 @@ export async function triggerNow() {
 
 let continuousLoopActive = false;
 
+// Return how many leads were inserted today (UTC day)
+async function getTodayInsertedCount() {
+  const db = getDb();
+  const todayUtc = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const row = await db.get(
+    `SELECT COUNT(*) as cnt FROM leads WHERE created_at >= ?`,
+    [`${todayUtc}T00:00:00.000Z`],
+  );
+  return row?.cnt ?? 0;
+}
+
+// Wait until the start of the next UTC midnight
+function msUntilMidnightUtc() {
+  const now = new Date();
+  const midnight = new Date(Date.UTC(
+    now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1,
+  ));
+  return midnight - now;
+}
+
 async function continuousLoop() {
   continuousLoopActive = true;
   logger.info('Continuous pipeline loop started');
+
   while (continuousLoopActive) {
+    const config = readConfig();
+    const dailyTarget = parseInt(config.daily_lead_target || '0', 10);
+
+    // Check daily target before starting a run
+    pipelineState.dailyTarget = dailyTarget;
+    if (dailyTarget > 0) {
+      const todayCount = await getTodayInsertedCount();
+      pipelineState.todayInserted = todayCount;
+      if (todayCount >= dailyTarget) {
+        const waitMs = msUntilMidnightUtc();
+        const waitMins = Math.ceil(waitMs / 60000);
+        logger.info(
+          { todayCount, dailyTarget, waitMins },
+          '[PIPELINE] Daily target reached — pausing until midnight UTC',
+        );
+        pipelineState.status = 'target_reached';
+        ioInstance?.emit('pipeline_target_reached', { todayCount, dailyTarget, resumeAt: new Date(Date.now() + waitMs).toISOString() });
+
+        // Wait in small chunks so we can break if continuousLoopActive is set to false
+        const chunkMs = 30_000;
+        let remaining = waitMs;
+        while (remaining > 0 && continuousLoopActive) {
+          await new Promise((r) => setTimeout(r, Math.min(chunkMs, remaining)));
+          remaining -= chunkMs;
+          // Re-check: if the target was raised or reset, exit the wait early
+          const newConfig = readConfig();
+          const newTarget = parseInt(newConfig.daily_lead_target || '0', 10);
+          const newCount = await getTodayInsertedCount();
+          if (newTarget === 0 || newCount < newTarget) break;
+        }
+        pipelineState.status = 'idle';
+        continue;
+      }
+    }
+
     await runPipeline('scheduler');
     if (!continuousLoopActive) break;
     // Small breathing gap between runs

@@ -35,6 +35,8 @@ router.get('/status', async (req, res, next) => {
       nextRunAt: state.nextRunAt,
       status: state.status,
       isRunning: state.isRunning,
+      todayInserted: state.todayInserted ?? 0,
+      dailyTarget: state.dailyTarget ?? 0,
       ollamaOnline,
       lastRun: lastRun
         ? {

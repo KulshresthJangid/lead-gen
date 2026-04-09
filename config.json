@@ -2,6 +2,7 @@
   "ollama_endpoint": "http://localhost:11434",
   "ollama_model": "mistral",
   "scraping_interval": "30",
+  "daily_lead_target": 0,
   "product_description": "",
   "icp_description": "",
   "scraper_targets": [],

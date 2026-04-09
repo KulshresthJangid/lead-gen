@@ -11,6 +11,7 @@ const settingsSchema = z.object({
   ollama_endpoint: z.string().url().optional(),
   ollama_model: z.string().min(1).optional(),
   scraping_interval: z.enum(['0', '15', '30', '60', '360']).optional(),
+  daily_lead_target: z.coerce.number().int().min(0).max(100000).optional(),
   product_description: z.string().max(1000).optional(),
   icp_description: z.string().max(1000).optional(),
   scraper_targets: z.array(
