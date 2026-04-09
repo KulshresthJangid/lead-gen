@@ -1,10 +1,221 @@
 {
   "ollama_endpoint": "http://localhost:11434",
   "ollama_model": "mistral",
-  "scraping_interval": "30",
-  "daily_lead_target": 0,
-  "product_description": "",
-  "icp_description": "",
-  "scraper_targets": [],
-  "is_setup_complete": "false"
+  "scraping_interval": "0",
+  "daily_lead_target": 2000,
+  "product_description": "A technical services provider offering on-demand development and QA support for startups and growing teams. I help companies ship faster by taking ownership of backend, frontend, and full-stack development tasks on a contract or freelance basis, while also providing dedicated QA resources to improve product quality, testing coverage, and release stability. Ideal for teams that are understaffed, scaling quickly, or need reliable execution without long hiring cycles.",
+  "icp_description": "Early-stage to mid-stage startups and small to mid-sized tech companies (Seed to Series B) that are actively building or scaling digital products but lack sufficient in-house engineering or QA capacity. Typically SaaS, AI, or web-based product companies with 5 to 100 employees, hiring engineers or struggling to meet delivery timelines. Key decision-makers include founders, CTOs, and engineering managers who need reliable contract-based development and QA support to accelerate product development, reduce backlog, and improve release quality without committing to full-time hires.",
+  "scraper_targets": [
+    {
+      "name": "GitHub - SaaS Founders India",
+      "url": "https://github.com",
+      "type": "github",
+      "query": "saas founder location:India followers:>50",
+      "selectors": {}
+    },
+    {
+      "name": "GitHub - Startup CTOs India",
+      "url": "https://github.com",
+      "type": "github",
+      "query": "cto startup location:India followers:>20",
+      "selectors": {}
+    },
+    {
+      "name": "GitHub - Indie Hackers India",
+      "url": "https://github.com",
+      "type": "github",
+      "query": "indie hacker location:India followers:>10",
+      "selectors": {}
+    },
+    {
+      "name": "GitHub - Engineers Bangalore",
+      "url": "https://github.com",
+      "type": "github",
+      "query": "engineer location:\"Bangalore\" followers:>30",
+      "selectors": {}
+    },
+    {
+      "name": "GitHub - Founders UK",
+      "url": "https://github.com",
+      "type": "github",
+      "query": "founder location:\"United Kingdom\" followers:>50",
+      "selectors": {}
+    },
+    {
+      "name": "GitHub - Startup Founders US",
+      "url": "https://github.com",
+      "type": "github",
+      "query": "founder startup location:\"United States\" followers:>100",
+      "selectors": {}
+    },
+    {
+      "name": "GitHub - Open Source Founders",
+      "url": "https://github.com",
+      "type": "github",
+      "query": "ceo open-source location:India followers:>30",
+      "selectors": {}
+    },
+    {
+      "name": "GitHub - B2B SaaS Builders",
+      "url": "https://github.com",
+      "type": "github",
+      "query": "b2b saas location:India followers:>20",
+      "selectors": {}
+    },
+    {
+      "name": "HN - Who Wants to Be Hired (India)",
+      "url": "https://news.ycombinator.com",
+      "type": "hackernews",
+      "query": "India",
+      "selectors": {}
+    },
+    {
+      "name": "HN - Who Wants to Be Hired (Remote)",
+      "url": "https://news.ycombinator.com",
+      "type": "hackernews",
+      "query": "remote",
+      "selectors": {}
+    },
+    {
+      "name": "HN - Who Wants to Be Hired (SaaS)",
+      "url": "https://news.ycombinator.com",
+      "type": "hackernews",
+      "query": "SaaS",
+      "selectors": {}
+    },
+    {
+      "name": "HN - Who Wants to Be Hired (Startup)",
+      "url": "https://news.ycombinator.com",
+      "type": "hackernews",
+      "query": "startup",
+      "selectors": {}
+    },
+    {
+      "name": "HN - Who Wants to Be Hired (Full-Stack)",
+      "url": "https://news.ycombinator.com",
+      "type": "hackernews",
+      "query": "full-stack",
+      "selectors": {}
+    },
+    {
+      "name": "HN - Who Wants to Be Hired (Founder)",
+      "url": "https://news.ycombinator.com",
+      "type": "hackernews",
+      "query": "founder",
+      "selectors": {}
+    },
+    {
+      "name": "Google - SaaS Founders India LinkedIn",
+      "url": "https://www.googleapis.com/customsearch/v1",
+      "type": "google",
+      "query": "site:linkedin.com/in \"founder\" \"India\" \"SaaS\"",
+      "selectors": {}
+    },
+    {
+      "name": "Google - Startup CEOs India LinkedIn",
+      "url": "https://www.googleapis.com/customsearch/v1",
+      "type": "google",
+      "query": "site:linkedin.com/in \"CEO\" \"startup\" \"India\"",
+      "selectors": {}
+    },
+    {
+      "name": "Google - CTOs Hiring India LinkedIn",
+      "url": "https://www.googleapis.com/customsearch/v1",
+      "type": "google",
+      "query": "site:linkedin.com/in \"CTO\" \"hiring\" \"India\" \"B2B\"",
+      "selectors": {}
+    },
+    {
+      "name": "Google - Hiring Startups India",
+      "url": "https://www.googleapis.com/customsearch/v1",
+      "type": "google",
+      "query": "\"startup hiring developers\" India OR \"we are hiring engineers\" startup India",
+      "selectors": {}
+    },
+    {
+      "name": "Google - Building in Public India",
+      "url": "https://www.googleapis.com/customsearch/v1",
+      "type": "google",
+      "query": "\"building in public\" India SaaS B2B founder 2024 OR 2025",
+      "selectors": {}
+    },
+    {
+      "name": "Google - Product Hunt Makers India",
+      "url": "https://www.googleapis.com/customsearch/v1",
+      "type": "google",
+      "query": "site:producthunt.com \"India\" \"maker\" SaaS",
+      "selectors": {}
+    },
+    {
+      "name": "Google - AngelList Founders India",
+      "url": "https://www.googleapis.com/customsearch/v1",
+      "type": "google",
+      "query": "site:wellfound.com \"India\" \"founder\" \"SaaS\"",
+      "selectors": {}
+    },
+    {
+      "name": "Google - Indie Hackers Revenue",
+      "url": "https://www.googleapis.com/customsearch/v1",
+      "type": "google",
+      "query": "site:indiehackers.com \"India\" \"$\" revenue OR \"MRR\"",
+      "selectors": {}
+    },
+    {
+      "name": "Google - YC Founders India",
+      "url": "https://www.googleapis.com/customsearch/v1",
+      "type": "google",
+      "query": "site:ycombinator.com \"India\" \"founder\" software",
+      "selectors": {}
+    },
+    {
+      "name": "Google - Dev.to Founders India",
+      "url": "https://www.googleapis.com/customsearch/v1",
+      "type": "google",
+      "query": "site:dev.to \"founder\" OR \"CTO\" \"India\" SaaS startup",
+      "selectors": {}
+    },
+    {
+      "name": "Google - Medium Founders India",
+      "url": "https://www.googleapis.com/customsearch/v1",
+      "type": "google",
+      "query": "site:medium.com \"founder\" \"India\" \"SaaS\" \"startup\" lessons learned",
+      "selectors": {}
+    },
+    {
+      "name": "Google - Substack Startup India",
+      "url": "https://www.googleapis.com/customsearch/v1",
+      "type": "google",
+      "query": "site:substack.com \"India\" \"startup\" \"founder\" newsletter",
+      "selectors": {}
+    },
+    {
+      "name": "Google - LinkedIn SaaS SE Asia",
+      "url": "https://www.googleapis.com/customsearch/v1",
+      "type": "google",
+      "query": "site:linkedin.com/in \"founder\" \"Singapore\" OR \"Vietnam\" OR \"Philippines\" \"SaaS\"",
+      "selectors": {}
+    },
+    {
+      "name": "Google - LinkedIn Founders MENA",
+      "url": "https://www.googleapis.com/customsearch/v1",
+      "type": "google",
+      "query": "site:linkedin.com/in \"founder\" \"UAE\" OR \"Dubai\" OR \"Saudi\" \"SaaS\"",
+      "selectors": {}
+    },
+    {
+      "name": "GitLab - Founders India",
+      "url": "https://gitlab.com",
+      "type": "gitlab",
+      "query": "founder India saas",
+      "selectors": {}
+    },
+    {
+      "name": "GitLab - CTO Startup",
+      "url": "https://gitlab.com",
+      "type": "gitlab",
+      "query": "cto startup b2b",
+      "selectors": {}
+    }
+  ],
+  "is_setup_complete": "true"
 }
