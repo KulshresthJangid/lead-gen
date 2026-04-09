@@ -99,80 +99,80 @@ export async function runPipeline(triggeredBy = 'scheduler') {
       logger.error({ runId, err }, '[PIPELINE] DB insertion failed');
     }
 
-    // Step 4: Enrich inserted leads in background (Mistral can be slow)
-    logger.info({ runId }, '[PIPELINE] Step 4: Enriching leads');
-    let enriched = inserted;
-    try {
-      enriched = await enrichBatch(inserted, config, ioInstance);
-      stats.enriched = enriched.filter((l) => l.enriched_at).length;
-      logger.info({ runId, enriched: stats.enriched }, '[PIPELINE] Enrichment complete');
-    } catch (err) {
-      errors.push(`Enrichment: ${err.message}`);
-      logger.error({ runId, err }, '[PIPELINE] Enrichment failed');
-    }
-
-    // Step 5: Refine outreach and update enriched fields in DB
-    logger.info({ runId }, '[PIPELINE] Step 5: Refining outreach');
-    let refined = enriched;
-    try {
-      refined = await refineOutreach(enriched, config);
-      logger.info({ runId }, '[PIPELINE] Outreach refinement complete');
-    } catch (err) {
-      errors.push(`Refinement: ${err.message}`);
-      logger.error({ runId, err }, '[PIPELINE] Refinement failed');
-    }
-
-    // Step 6: Update enriched fields in DB
-    logger.info({ runId }, '[PIPELINE] Step 6: Updating enrichment in DB');
-    try {
-      const updateStmt = `UPDATE leads SET pain_points=?, reason_for_outreach=?, lead_quality=?,
-        confidence_score=?, enriched_at=?, status=? WHERE email=?`;
-      const enrichedEmailSet = new Set(refined.filter((l) => l.enriched_at).map((l) => l.email));
-      for (const lead of refined) {
-        if (lead.enriched_at) {
-          await db.run(updateStmt, [
-            lead.pain_points || '', lead.reason_for_outreach || '',
-            lead.lead_quality || null, lead.confidence_score || null,
-            lead.enriched_at, lead.status || 'enriched', lead.email,
-          ]);
-        } else {
-          // Enrich failed for this lead — increment attempt count so the hourly sweep
-          // can pick it up, and stop retrying after 3 failures.
-          await db.run(
-            `UPDATE leads SET enrichment_attempts = enrichment_attempts + 1 WHERE email = ?`,
-            [lead.email],
-          );
-        }
-      }
-      logger.info({ runId }, '[PIPELINE] DB enrichment update complete');
-    } catch (err) {
-      errors.push(`DB enrichment update: ${err.message}`);
-      logger.error({ runId, err }, '[PIPELINE] DB enrichment update failed');
-    }
-
+    // ── Release the pipeline lock NOW so scraping can restart immediately.
+    // Steps 4-6 (enrich + refine + DB update) run in the background so
+    // Ollama enrichment and the next scraping cycle run concurrently.
     stats.errors = errors.length;
-    const finalStatus =
-      errors.length === 0 ? 'success' : stats.inserted > 0 ? 'partial' : 'failed';
-
-    await db.run(
-      `UPDATE pipeline_log
-       SET finished_at=?, status=?, scraped_count=?, dupes_skipped=?,
-           inserted_count=?, enriched_count=?, error_count=?, errors_json=?
-       WHERE run_id=?`,
-      [
-        new Date().toISOString(), finalStatus, stats.scraped, stats.dupes,
-        stats.inserted, stats.enriched, stats.errors, JSON.stringify(errors),
-        runId,
-      ],
-    );
-
+    isRunning = false;
     pipelineState.lastRunAt = new Date().toISOString();
     pipelineState.status = 'idle';
     pipelineState.lastRunStats = stats;
 
-    ioInstance?.emit('pipeline_done', { runId, stats });
+    await db.run(
+      `UPDATE pipeline_log
+       SET finished_at=?, status='scraping_done', scraped_count=?, dupes_skipped=?,
+           inserted_count=?, error_count=?, errors_json=?
+       WHERE run_id=?`,
+      [
+        new Date().toISOString(), stats.scraped, stats.dupes,
+        stats.inserted, stats.errors, JSON.stringify(errors),
+        runId,
+      ],
+    );
 
-    logger.info({ runId, stats }, '[PIPELINE] Run complete');
+    ioInstance?.emit('pipeline_done', { runId, stats });
+    logger.info({ runId, stats }, '[PIPELINE] Scraping done — enrichment running in background');
+
+    // Background: Steps 4-6 — non-blocking, runs while next scrape starts
+    setImmediate(async () => {
+      let enriched = inserted;
+      try {
+        logger.info({ runId }, '[PIPELINE] Step 4: Enriching leads (background)');
+        enriched = await enrichBatch(inserted, config, ioInstance);
+        stats.enriched = enriched.filter((l) => l.enriched_at).length;
+        logger.info({ runId, enriched: stats.enriched }, '[PIPELINE] Enrichment complete');
+      } catch (err) {
+        logger.error({ runId, err }, '[PIPELINE] Enrichment failed');
+      }
+
+      let refined = enriched;
+      try {
+        logger.info({ runId }, '[PIPELINE] Step 5: Refining outreach (background)');
+        refined = await refineOutreach(enriched, config);
+        logger.info({ runId }, '[PIPELINE] Outreach refinement complete');
+      } catch (err) {
+        logger.error({ runId, err }, '[PIPELINE] Refinement failed');
+      }
+
+      try {
+        logger.info({ runId }, '[PIPELINE] Step 6: Updating enrichment in DB (background)');
+        const updateStmt = `UPDATE leads SET pain_points=?, reason_for_outreach=?, lead_quality=?,
+          confidence_score=?, enriched_at=?, status=? WHERE email=?`;
+        for (const lead of refined) {
+          if (lead.enriched_at) {
+            await db.run(updateStmt, [
+              lead.pain_points || '', lead.reason_for_outreach || '',
+              lead.lead_quality || null, lead.confidence_score || null,
+              lead.enriched_at, lead.status || 'enriched', lead.email,
+            ]);
+          } else {
+            await db.run(
+              `UPDATE leads SET enrichment_attempts = enrichment_attempts + 1 WHERE email = ?`,
+              [lead.email],
+            );
+          }
+        }
+        const finalStatus = errors.length === 0 ? 'success' : stats.inserted > 0 ? 'partial' : 'failed';
+        await db.run(
+          `UPDATE pipeline_log SET status=?, enriched_count=? WHERE run_id=?`,
+          [finalStatus, stats.enriched, runId],
+        );
+        logger.info({ runId }, '[PIPELINE] Background enrichment complete');
+      } catch (err) {
+        logger.error({ runId, err }, '[PIPELINE] Background DB enrichment update failed');
+      }
+    });
+
     return { runId, stats };
   } catch (err) {
     logger.error({ runId, err }, '[PIPELINE] Fatal error');
