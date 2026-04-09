@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import { v4 as uuidv4 } from 'uuid';
-import { scrapeLeads } from './scraper.js';
+import { scrapeLeads, pushRuntimeQueries } from './scraper.js';
+import { generateGitHubQueries, generateGoogleQueries } from './queryGenerator.js';
 import { filter as dedupeFilter } from './deduplicator.js';
 import { enrichBatch, refineOutreach } from './enricher.js';
 import { getDb } from '../db.js';
@@ -44,6 +45,19 @@ export async function runPipeline(triggeredBy = 'scheduler') {
 
   try {
     const config = readConfig();
+
+    // Step 0: Generate AI queries to keep the pool fresh and infinite
+    logger.info({ runId }, '[PIPELINE] Step 0: Generating AI queries');
+    try {
+      const [githubQs, googleQs] = await Promise.all([
+        generateGitHubQueries(config),
+        generateGoogleQueries(config),
+      ]);
+      pushRuntimeQueries({ github: githubQs, google: googleQs });
+      logger.info({ runId, github: githubQs.length, google: googleQs.length }, '[PIPELINE] AI queries ready');
+    } catch (err) {
+      logger.warn({ runId, err: err.message }, '[PIPELINE] AI query gen failed — continuing with pool');
+    }
 
     // Step 1: Scrape
     logger.info({ runId }, '[PIPELINE] Step 1: Scraping');

@@ -161,17 +161,48 @@ const GITHUB_QUERY_POOL = [
   'tech lead followers:>10 repos:>10',
 ];
 
-function pickRandomQueries(pool, n = 3) {
-  const shuffled = [...pool].sort(() => Math.random() - 0.5);
-  return shuffled.slice(0, n);
+// ── Runtime pools (AI-generated, refreshed each pipeline run) ────────────────
+const runtimeGithubPool = [];
+const runtimeGooglePool = [];
+
+export function pushRuntimeQueries({ github = [], google = [] } = {}) {
+  runtimeGithubPool.length = 0;
+  runtimeGithubPool.push(...github);
+  runtimeGooglePool.length = 0;
+  runtimeGooglePool.push(...google);
+  _shuffledPool = null; // force reshuffle so AI queries are included
+}
+
+const queryPageCursor = new Map();
+const MAX_GITHUB_PAGE = 20;
+
+function getNextPage(query) {
+  const page = ((queryPageCursor.get(query) || 0) % MAX_GITHUB_PAGE) + 1;
+  queryPageCursor.set(query, page);
+  return page;
+}
+
+let _poolIndex = 0;
+let _shuffledPool = null;
+
+function pickNextQueries(n = 10) {
+  const combined = [...GITHUB_QUERY_POOL, ...runtimeGithubPool];
+  if (!_shuffledPool || _poolIndex >= _shuffledPool.length) {
+    _shuffledPool = [...combined].sort(() => Math.random() - 0.5);
+    _poolIndex = 0;
+    logger.info({ poolSize: _shuffledPool.length }, '[SCRAPER] Query pool cycled — reshuffling');
+  }
+  const batch = _shuffledPool.slice(_poolIndex, Math.min(_poolIndex + n, _shuffledPool.length));
+  _poolIndex += batch.length;
+  return batch;
 }
 
 async function scrapeGitHubBios(query = 'developer') {
   const leads = [];
   try {
-    // Rotate through pages so continuous runs don't return the same users every time.
-    // GitHub allows pages 1–34 (max 1000 results at per_page=30).
-    const page = Math.floor(Math.random() * 10) + 1;
+    // Sequential page cursor — advances 1→20→1… per query so we systematically
+    // cover 600 users per query instead of randomly re-hitting the same results.
+    const page = getNextPage(query);
     const searchRes = await throttledGet('https://api.github.com/search/users', {
       params: { q: query, per_page: 30, page, type: 'Users' },
       headers: githubHeaders(),
@@ -438,47 +469,76 @@ async function scrapeCustomUrl(url, selectors = {}) {
 // ── Main entry point ──────────────────────────────────────────────────────────
 /**
  * Scrape all configured targets.
- * targets: Array<{ url: string, type?: string, selectors?: object, query?: string }>
+ * Strategy:
+ *  - GitHub: consolidate ALL github targets, pick 12 unique queries per run
+ *            from combined pool (target queries + sequential cursor pool).
+ *  - HackerNews: one call per unique keyword filter.
+ *  - Google CSE: target queries + AI runtime queries (up to 15 total).
+ *  - GitLab / Custom: each target individually.
  */
 export async function scrapeLeads(targets = []) {
   const allLeads = [];
 
-  for (const target of targets) {
-    try {
-      let leads = [];
-      if (target.type === 'github' || target.url?.includes('github.com')) {
-        // Pick 3 random queries from the pool each run — include user's configured
-        // query in the pool so it still runs, but we also explore new territory.
-        const pool = target.query
-          ? [target.query, ...GITHUB_QUERY_POOL.filter((q) => q !== target.query)]
-          : GITHUB_QUERY_POOL;
-        const queries = pickRandomQueries(pool, 3);
-        for (const q of queries) {
-          const batch = await scrapeGitHubBios(q);
-          leads.push(...batch);
-        }
-      } else if (target.type === 'hackernews' || target.url?.includes('news.ycombinator.com')) {
-        leads = await scrapeHackerNews(target.query || '');
-      } else if (target.type === 'gitlab' || target.url?.includes('gitlab.com')) {
-        leads = await scrapeGitLab(target.query || 'developer');
-      } else if (target.type === 'google') {
-        leads = await scrapeGoogle(target.query || 'site:linkedin.com/in founder India SaaS');
-      } else if (target.url) {
-        leads = await scrapeCustomUrl(target.url, target.selectors || {});
-      }
-      allLeads.push(...leads);
-    } catch (err) {
-      logger.error({ target, err: err.message }, 'Target scrape failed');
-    }
-  }
+  const githubTargets = targets.filter(
+    t => t.type === 'github' || t.url?.includes('github.com'),
+  );
+  const hnTargets = targets.filter(
+    t => t.type === 'hackernews' || t.url?.includes('news.ycombinator.com'),
+  );
+  const googleTargets = targets.filter(t => t.type === 'google');
+  const gitlabTargets = targets.filter(
+    t => t.type === 'gitlab' || t.url?.includes('gitlab.com'),
+  );
+  const customTargets = targets.filter(t => {
+    if (!t.url) return false;
+    if (['github', 'hackernews', 'google', 'gitlab'].includes(t.type)) return false;
+    if (t.url.includes('github.com') || t.url.includes('news.ycombinator.com') || t.url.includes('gitlab.com')) return false;
+    return true;
+  });
 
-  // If no targets configured, sample 3 random queries from the pool
-  if (targets.length === 0) {
-    const queries = pickRandomQueries(GITHUB_QUERY_POOL, 3);
+  // GitHub: unified pool, 12 unique queries per run
+  if (githubTargets.length > 0 || targets.length === 0) {
+    const targetQueries = githubTargets.map(t => t.query).filter(Boolean);
+    const slotsFree = Math.max(2, 12 - targetQueries.length);
+    const poolQueries = pickNextQueries(slotsFree);
+    const queries = [...new Set([...targetQueries, ...poolQueries])];
+    logger.info({ count: queries.length }, '[SCRAPER] GitHub queries this run');
     for (const q of queries) {
       const batch = await scrapeGitHubBios(q);
       allLeads.push(...batch);
     }
+  }
+
+  // HackerNews: one call per unique keyword filter
+  const hnKeywords = hnTargets.length > 0
+    ? [...new Set(hnTargets.map(t => t.query || ''))]
+    : (targets.length === 0 ? [''] : []);
+  for (const keyword of hnKeywords) {
+    const batch = await scrapeHackerNews(keyword);
+    allLeads.push(...batch);
+  }
+
+  // Google CSE: target queries + AI runtime queries
+  if (googleTargets.length > 0 || runtimeGooglePool.length > 0) {
+    const targetQueries = googleTargets.map(t => t.query).filter(Boolean);
+    const combined = [...new Set([...targetQueries, ...runtimeGooglePool])];
+    logger.info({ count: combined.length }, '[SCRAPER] Google CSE queries this run');
+    for (const q of combined.slice(0, 15)) {
+      const batch = await scrapeGoogle(q);
+      allLeads.push(...batch);
+    }
+  }
+
+  // GitLab: each target individually
+  for (const t of gitlabTargets) {
+    const batch = await scrapeGitLab(t.query || 'developer');
+    allLeads.push(...batch);
+  }
+
+  // Custom URLs: each target individually
+  for (const t of customTargets) {
+    const batch = await scrapeCustomUrl(t.url, t.selectors || {});
+    allLeads.push(...batch);
   }
 
   // Deduplicate within this batch (by email)
