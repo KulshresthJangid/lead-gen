@@ -313,12 +313,86 @@ async function scrapeHackerNews(keywordFilter = '') {
   return leads;
 }
 
-// ── GitLab adapter (public API, no token needed) ──────────────────────────────
+// ── HackerNews "Ask HN: Who is hiring?" adapter ───────────────────────────────
+// Scrapes the monthly hiring thread for company-side emails (B2B gold).
+// Format: "CompanyName | Role | Location | Remote\n...email@company.com"
+async function scrapeHackerNewsHiring(keywordFilter = '') {
+  const leads = [];
+  try {
+    const searchRes = await throttledGet(
+      'https://hn.algolia.com/api/v1/search_by_date?query=ask+hn+who+is+hiring&tags=ask_hn&hitsPerPage=1',
+    );
+    const story = searchRes.data?.hits?.[0];
+    if (!story) return leads;
+
+    const storyId = story.objectID;
+    let comments = [];
+    for (let page = 0; page < 3; page++) {
+      const pageRes = await throttledGet(
+        `https://hn.algolia.com/api/v1/search?tags=comment,story_${storyId}&hitsPerPage=200&page=${page}`,
+      );
+      const hits = pageRes.data?.hits || [];
+      if (!hits.length) break;
+      comments.push(...hits);
+      if (hits.length < 200) break;
+    }
+
+    const emailRegex = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
+
+    for (const comment of comments) {
+      const text = (comment.comment_text || comment.text || '').replace(/<[^>]+>/g, ' ');
+      if (!text) continue;
+      if (keywordFilter && !text.toLowerCase().includes(keywordFilter.toLowerCase())) continue;
+
+      const emails = text.match(emailRegex) || [];
+      if (!emails.length) continue;
+
+      // First line of a hiring post: "CompanyName | Role | Location..."
+      const firstLine = text.split('\n')[0].replace(/<[^>]+>/g, '').trim();
+      const parts = firstLine.split(/\s*[|–-]\s*/);
+      const companyRaw = (parts[0] || '').replace(/\(https?:[^)]+\)/, '').trim();
+      const roleRaw = (parts[1] || '').trim();
+      const locationRaw = (parts[2] || '').trim();
+
+      for (const email of emails) {
+        // Skip personal/test emails as best-effort filter
+        if (!isValidEmail(email)) continue;
+        if (/gmail\.com|yahoo\.com|hotmail\.com|outlook\.com/.test(email)) continue;
+        leads.push({
+          full_name: comment.author || '',
+          job_title: roleRaw.slice(0, 80),
+          company_name: companyRaw.slice(0, 100),
+          company_domain: extractDomain(email.split('@')[1] || ''),
+          email,
+          linkedin_url: '',
+          location: locationRaw.slice(0, 80),
+          source: 'hackernews_hiring',
+        });
+        break; // one lead per comment
+      }
+    }
+
+    logger.info({ source: 'hackernews_hiring', storyId, found: leads.length }, 'HN hiring scrape complete');
+  } catch (err) {
+    logger.error({ err: err.message }, 'HackerNews hiring scrape failed');
+  }
+  return leads;
+}
+
+// ── GitLab adapter (requires GITLAB_TOKEN env var for user search) ─────────────
+// Get a free token: gitlab.com → Preferences → Access Tokens → scope: read_user
 async function scrapeGitLab(query = 'developer') {
   const leads = [];
+  const token = process.env.GITLAB_TOKEN;
+  if (!token) {
+    logger.warn('[SCRAPER] GitLab skipped — GITLAB_TOKEN not set in .env');
+    return leads;
+  }
+  const glHeaders = { 'PRIVATE-TOKEN': token };
   try {
     const searchRes = await throttledGet('https://gitlab.com/api/v4/users', {
       params: { search: query, per_page: 20 },
+      headers: glHeaders,
     });
 
     const users = searchRes.data || [];
@@ -326,7 +400,9 @@ async function scrapeGitLab(query = 'developer') {
     for (const user of users) {
       try {
         await delay(300);
-        const userRes = await throttledGet(`https://gitlab.com/api/v4/users/${user.id}`);
+        const userRes = await throttledGet(`https://gitlab.com/api/v4/users/${user.id}`, {
+          headers: glHeaders,
+        });
         const u = userRes.data;
 
         if (isValidEmail(u.public_email || '')) {
@@ -509,13 +585,19 @@ export async function scrapeLeads(targets = []) {
     }
   }
 
-  // HackerNews: one call per unique keyword filter
+  // HackerNews: scrape "Who wants to be hired?" + "Who is hiring?" threads
   const hnKeywords = hnTargets.length > 0
     ? [...new Set(hnTargets.map(t => t.query || ''))]
     : (targets.length === 0 ? [''] : []);
   for (const keyword of hnKeywords) {
     const batch = await scrapeHackerNews(keyword);
     allLeads.push(...batch);
+  }
+  // Also always scrape the "Who is hiring?" thread when HN targets are present
+  // — gives company/startup emails (better B2B signal than job seeker emails)
+  if (hnTargets.length > 0 || targets.length === 0) {
+    const hiringBatch = await scrapeHackerNewsHiring();
+    allLeads.push(...hiringBatch);
   }
 
   // Google CSE: target queries + AI runtime queries
