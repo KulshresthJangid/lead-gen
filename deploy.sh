@@ -52,21 +52,6 @@ else
 fi
 
 echo ""
-echo "  ── Owner / migration account (press Enter to skip — uses admin@localhost / admin) ──"
-ask "Owner email"    "admin@localhost"       OWNER_EMAIL
-ask "Owner name"     "Admin"                 OWNER_NAME
-ask "Owner password" "admin"                 OWNER_PASSWORD
-ask "Org name"       "Default Organisation"  ORG_NAME
-
-# Warn loudly if still on defaults
-if [ "${OWNER_PASSWORD}" = "admin" ]; then
-  warn "Using default password 'admin' — change it immediately after first login!"
-fi
-if [ "${OWNER_EMAIL}" = "admin@localhost" ]; then
-  warn "Using default email 'admin@localhost' — set OWNER_EMAIL for a real address."
-fi
-
-echo ""
 
 # ── Static config derived above ───────────────────────────────────────────────
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -123,10 +108,10 @@ DB_TYPE=sqlite
 LOG_LEVEL=info
 ALLOWED_ORIGINS=${PROD_DOMAIN}
 JWT_SECRET=${JWT_SECRET}
-OWNER_EMAIL=${OWNER_EMAIL}
-OWNER_NAME=${OWNER_NAME}
-OWNER_PASSWORD=${OWNER_PASSWORD}
-ORG_NAME=${ORG_NAME}
+RABBITMQ_HOST=localhost
+RABBITMQ_PORT=5672
+RABBITMQ_USERNAME=root
+RABBITMQ_PASSWORD=123@abc
 EOF
   log ".env created"
 else
@@ -141,11 +126,11 @@ else
       echo "${key}=${val}" >> "${ENV_FILE}"
     fi
   }
-  update_env JWT_SECRET      "${JWT_SECRET}"
-  update_env OWNER_EMAIL     "${OWNER_EMAIL}"
-  update_env OWNER_NAME      "${OWNER_NAME}"
-  update_env OWNER_PASSWORD  "${OWNER_PASSWORD}"
-  update_env ORG_NAME        "${ORG_NAME}"
+  update_env JWT_SECRET         "${JWT_SECRET}"
+  update_env RABBITMQ_HOST      "localhost"
+  update_env RABBITMQ_PORT      "5672"
+  update_env RABBITMQ_USERNAME  "root"
+  update_env RABBITMQ_PASSWORD  "123@abc"
   log ".env updated"
 fi
 
@@ -229,8 +214,6 @@ echo -e "${G}${B}✔  LeadGen Pro is live!${NC}"
 echo ""
 echo "  Frontend  →  ${PROD_DOMAIN}${VITE_BASE}"
 echo "  Backend   →  ${PROD_DOMAIN}${VITE_API_URL}/  (internal port ${SERVER_PORT})"
-echo ""
-echo "  Login with:  ${OWNER_EMAIL}  /  (password you set)"
 echo ""
 echo "  Useful commands:"
 echo "    pm2 logs ${PM2_APP_NAME}       # stream backend logs"
