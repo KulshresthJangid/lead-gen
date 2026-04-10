@@ -51,8 +51,13 @@ const MIGRATIONS = [
     enriched_count  INTEGER DEFAULT 0,
     error_count     INTEGER DEFAULT 0,
     errors_json     TEXT,
-    triggered_by    TEXT DEFAULT 'scheduler'
+    triggered_by    TEXT DEFAULT 'scheduler',
+    campaign_id     TEXT,
+    org_id          TEXT
   )`,
+  // ALTER TABLE migrations — safe to re-run (caught if column already exists)
+  `ALTER TABLE pipeline_log ADD COLUMN campaign_id TEXT`,
+  `ALTER TABLE pipeline_log ADD COLUMN org_id TEXT`,
   `CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -280,7 +285,9 @@ export async function initDb() {
     const rawDb = new BetterSqlite3(join(dataDir, 'leads.db'));
     rawDb.pragma('journal_mode = WAL');
     rawDb.pragma('foreign_keys = ON');
-    for (const migration of MIGRATIONS) rawDb.exec(migration);
+    for (const migration of MIGRATIONS) {
+      try { rawDb.exec(migration); } catch { /* column/index already exists — safe to skip */ }
+    }
     db = createSQLiteInterface(rawDb);
   }
 

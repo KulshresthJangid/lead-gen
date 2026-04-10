@@ -62,7 +62,8 @@ router.get('/status', async (req, res, next) => {
         dupes: r.dupes_skipped,
         errors: r.error_count,
         triggeredBy: r.triggered_by,
-        campaignId: r.campaign_id,
+        campaignId: r.campaign_id || null,
+        orgId: r.org_id || null,
       })),
     });
   } catch (err) {
@@ -76,7 +77,7 @@ router.get('/status', async (req, res, next) => {
 router.post('/trigger', async (req, res, next) => {
   try {
     const db = getDb();
-    let { campaignId } = req.body || {};
+    let { campaignId, org_id: orgId = null } = req.body || {};
 
     if (!campaignId) {
       const campaign = await db.get(
@@ -90,9 +91,10 @@ router.post('/trigger', async (req, res, next) => {
     await publishJob(`pipeline.${req.tenantId}.${campaignId}`, {
       tenantId: req.tenantId,
       campaignId,
+      orgId,
       triggeredBy: 'manual',
     });
-    res.json({ queued: true, message: 'Pipeline job queued', campaignId });
+    res.json({ queued: true, message: 'Pipeline job queued', campaignId, orgId });
   } catch (err) {
     next(err);
   }

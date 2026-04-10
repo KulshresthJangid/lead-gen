@@ -61,6 +61,8 @@ router.get('/status', async (req, res, next) => {
         dupes: r.dupes_skipped,
         errors: r.error_count,
         triggeredBy: r.triggered_by,
+        campaignId: r.campaign_id || null,
+        orgId: r.org_id || null,
       })),
     });
   } catch (err) {
@@ -71,12 +73,13 @@ router.get('/status', async (req, res, next) => {
 // ── POST /api/pipeline/trigger ────────────────────────────────────────────────
 router.post('/trigger', async (req, res, next) => {
   try {
-    const result = await triggerNow();
+    const { campaign_id: campaignId = null, org_id: orgId = null } = req.body || {};
+    const result = await triggerNow({ campaignId, orgId });
     if (result?.conflict) {
       return res.status(409).json({ error: 'Pipeline is already running' });
     }
     const runId = result?.runId || 'pending';
-    res.json({ runId, message: 'Pipeline started' });
+    res.json({ runId, campaignId, orgId, message: 'Pipeline started' });
   } catch (err) {
     next(err);
   }

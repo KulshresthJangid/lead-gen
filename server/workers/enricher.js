@@ -115,8 +115,8 @@ async function callOllama(endpoint, model, prompt) {
  * Call Ollama, parse JSON, detect/repair truncation, retry once on failure.
  * Logs every attempt to ai-events.jsonl via aiLogger.
  */
-async function parseWithRetry(endpoint, model, prompt, context = 'batch', leadIds = []) {
-  const logBase = { model, context, lead_ids: leadIds };
+async function parseWithRetry(endpoint, model, prompt, context = 'batch', leadIds = [], { runId = null, campaignId = null, orgId = null } = {}) {
+  const logBase = { model, context, lead_ids: leadIds, run_id: runId, campaign_id: campaignId, org_id: orgId };
   let raw = '';
   let done_reason = 'stop';
   let duration_ms = 0;
@@ -215,7 +215,7 @@ async function parseWithRetry(endpoint, model, prompt, context = 'batch', leadId
 /**
  * First pass: bulk enrichment in batches of BATCH_SIZE.
  */
-export async function enrichBatch(leads, config = {}, io = null) {
+export async function enrichBatch(leads, config = {}, io = null, { runId = null, campaignId = null, orgId = null } = {}) {
   if (!leads.length) return leads;
 
   const endpoint = config.ollama_endpoint || 'http://localhost:11434';
@@ -242,7 +242,7 @@ export async function enrichBatch(leads, config = {}, io = null) {
   for (const chunk of chunks) {
     const chunkIds = chunk.map((l) => l.email);
     const prompt = `${systemPrompt}\n\nLeads to enrich:\n${JSON.stringify(chunk)}`;
-    let result = await parseWithRetry(endpoint, model, prompt, 'enrichBatch', chunkIds);
+    let result = await parseWithRetry(endpoint, model, prompt, 'enrichBatch', chunkIds, { runId, campaignId, orgId });
 
     // If the batch failed entirely, fall back to one lead at a time
     if (!result?.leads || !Array.isArray(result.leads) || result.leads.length === 0) {
@@ -251,7 +251,7 @@ export async function enrichBatch(leads, config = {}, io = null) {
       for (const singleLead of chunk) {
         const singlePrompt = `${systemPrompt}\n\nLeads to enrich:\n${JSON.stringify([singleLead])}`;
         const singleResult = await parseWithRetry(
-          endpoint, model, singlePrompt, `enrichBatch:single:${singleLead.email}`, [singleLead.email],
+          endpoint, model, singlePrompt, `enrichBatch:single:${singleLead.email}`, [singleLead.email], { runId, campaignId, orgId },
         );
         if (singleResult?.leads?.length) {
           result.leads.push(...singleResult.leads);
@@ -283,7 +283,7 @@ export async function enrichBatch(leads, config = {}, io = null) {
 /**
  * Second pass: hyper-personalize reason_for_outreach per lead.
  */
-export async function refineOutreach(leads, config = {}) {
+export async function refineOutreach(leads, config = {}, { runId = null, campaignId = null, orgId = null } = {}) {
   if (!leads.length) return leads;
 
   const endpoint = config.ollama_endpoint || 'http://localhost:11434';
@@ -307,7 +307,7 @@ Rules:
 Lead:
 ${JSON.stringify(lead)}`;
 
-    const result = await parseWithRetry(endpoint, model, prompt, `refineOutreach`, [lead.email]);
+    const result = await parseWithRetry(endpoint, model, prompt, `refineOutreach`, [lead.email], { runId, campaignId, orgId });
     if (result && result.reason_for_outreach) {
       refined[i] = { ...refined[i], reason_for_outreach: result.reason_for_outreach };
     }

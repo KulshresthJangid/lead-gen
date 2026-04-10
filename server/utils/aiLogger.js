@@ -32,6 +32,9 @@ try { mkdirSync(LOG_DIR, { recursive: true }); } catch { /* already exists */ }
  * @param {object} event
  * @param {string}   event.context        - Where the call came from, e.g. 'enrichBatch', 'refineOutreach', 'refineOutreach:john@acme.com'
  * @param {string}   event.model          - Ollama model name, e.g. 'mistral'
+ * @param {string}   [event.run_id]       - Pipeline run UUID this call belongs to
+ * @param {string}   [event.campaign_id]  - Campaign identifier, if applicable
+ * @param {string}   [event.org_id]       - Organisation identifier, if applicable
  * @param {number}   event.attempt        - 1 = first try, 2 = retry
  * @param {number}   event.prompt_length  - Total prompt character count
  * @param {string}   event.prompt_preview - First 400 chars of the prompt sent

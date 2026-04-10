@@ -126,6 +126,33 @@ function EventCard({ event, idx }) {
           {event.lead_ids?.length > 0 && (
             <span>{event.lead_ids.length} lead{event.lead_ids.length > 1 ? 's' : ''}</span>
           )}
+          {event.run_id && (
+            <span
+              className="px-1.5 py-0.5 rounded border text-[10px]"
+              style={{ backgroundColor: 'var(--hover)', borderColor: 'var(--border-md)', color: 'var(--text-3)' }}
+              title="Pipeline run ID"
+            >
+              run:{event.run_id.slice(0, 8)}
+            </span>
+          )}
+          {event.campaign_id && (
+            <span
+              className="px-1.5 py-0.5 rounded border text-[10px]"
+              style={{ backgroundColor: 'var(--hover)', borderColor: 'var(--border-md)', color: 'var(--text-2)' }}
+              title="Campaign"
+            >
+              campaign:{event.campaign_id}
+            </span>
+          )}
+          {event.org_id && (
+            <span
+              className="px-1.5 py-0.5 rounded border text-[10px]"
+              style={{ backgroundColor: 'var(--hover)', borderColor: 'var(--border-md)', color: 'var(--text-2)' }}
+              title="Organisation"
+            >
+              org:{event.org_id}
+            </span>
+          )}
           {event.ts && (
             <span className="ml-auto">
               {formatDistanceToNow(new Date(event.ts), { addSuffix: true })}
