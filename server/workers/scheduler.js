@@ -1,394 +1,86 @@
 import cron from 'node-cron';
-import { v4 as uuidv4 } from 'uuid';
-import { scrapeLeads, pushRuntimeQueries } from './scraper.js';
-import { generateGitHubQueries, generateGoogleQueries } from './queryGenerator.js';
-import { filter as dedupeFilter } from './deduplicator.js';
-import { enrichBatch, refineOutreach } from './enricher.js';
 import { getDb } from '../db.js';
 import { readConfig } from '../utils/config.js';
+import { publishJob } from '../utils/rabbitmq.js';
 import logger from '../utils/logger.js';
 
-let cronTask = null;
+// Per-{tenantId:campaignId} state map
+const stateMap  = new Map(); // key → { isRunning, lastRunAt, nextRunAt, status, todayInserted, dailyTarget }
+const cronMap   = new Map(); // key → { task, continuous }
+
 let ioInstance = null;
-let isRunning = false;
 
-const pipelineState = {
-  lastRunAt: null,
-  nextRunAt: null,
-  status: 'idle',
-  lastRunStats: null,
-  todayInserted: 0,
-  dailyTarget: 0,
-};
+function stateKey(tenantId, campaignId) {
+  return `${tenantId}:${campaignId}`;
+}
 
-// ── Pipeline runner ───────────────────────────────────────────────────────────
-export async function runPipeline(triggeredBy = 'scheduler') {
-  if (isRunning) {
-    logger.warn('Pipeline already running — skipping trigger');
-    return null;
-  }
-
-  isRunning = true;
-  const runId = uuidv4();
-  const db = getDb();
-  const errors = [];
-  pipelineState.status = 'running';
-
-  ioInstance?.emit('pipeline_start', { runId, triggeredBy });
-
-  await db.run(
-    `INSERT INTO pipeline_log (run_id, started_at, status, triggered_by) VALUES (?, ?, 'running', ?)`,
-    [runId, new Date().toISOString(), triggeredBy],
-  );
-
-  const stats = { scraped: 0, dupes: 0, inserted: 0, enriched: 0, errors: 0 };
-
-  try {
-    const config = readConfig();
-
-    // Step 0: Generate AI queries to keep the pool fresh and infinite
-    logger.info({ runId }, '[PIPELINE] Step 0: Generating AI queries');
-    try {
-      const [githubQs, googleQs] = await Promise.all([
-        generateGitHubQueries(config),
-        generateGoogleQueries(config),
-      ]);
-      pushRuntimeQueries({ github: githubQs, google: googleQs });
-      logger.info({ runId, github: githubQs.length, google: googleQs.length }, '[PIPELINE] AI queries ready');
-    } catch (err) {
-      logger.warn({ runId, err: err.message }, '[PIPELINE] AI query gen failed — continuing with pool');
-    }
-
-    // Step 1: Scrape
-    logger.info({ runId }, '[PIPELINE] Step 1: Scraping');
-    let raw = [];
-    try {
-      raw = await scrapeLeads(config.scraper_targets || []);
-      stats.scraped = raw.length;
-      logger.info({ runId, count: raw.length }, '[PIPELINE] Scraping complete');
-    } catch (err) {
-      errors.push(`Scraper: ${err.message}`);
-      logger.error({ runId, err }, '[PIPELINE] Scraper failed');
-    }
-
-    // Step 2: Dedup
-    logger.info({ runId }, '[PIPELINE] Step 2: Deduplicating');
-    let unique = raw;
-    try {
-      const { unique: u, dupes } = await dedupeFilter(db, raw);
-      unique = u;
-      stats.dupes = dupes.length;
-      logger.info({ runId, unique: u.length, dupes: dupes.length }, '[PIPELINE] Dedup complete');
-    } catch (err) {
-      errors.push(`Dedup: ${err.message}`);
-      logger.error({ runId, err }, '[PIPELINE] Dedup failed');
-    }
-
-    // Step 3: Insert leads immediately so they appear in the UI right away
-    logger.info({ runId }, '[PIPELINE] Step 3: Inserting leads');
-    let inserted = [];
-    try {
-      inserted = await db.insertLeads(unique);
-      stats.inserted = inserted.length;
-      logger.info({ runId, inserted: inserted.length }, '[PIPELINE] Insertion complete');
-      if (inserted.length > 0) {
-        ioInstance?.emit('new_leads', { count: inserted.length, runId });
-      }
-    } catch (err) {
-      errors.push(`DB insert: ${err.message}`);
-      logger.error({ runId, err }, '[PIPELINE] DB insertion failed');
-    }
-
-    // ── Release the pipeline lock NOW so scraping can restart immediately.
-    // Steps 4-6 (enrich + refine + DB update) run in the background so
-    // Ollama enrichment and the next scraping cycle run concurrently.
-    stats.errors = errors.length;
-    isRunning = false;
-    pipelineState.lastRunAt = new Date().toISOString();
-    pipelineState.status = 'idle';
-    pipelineState.lastRunStats = stats;
-
-    await db.run(
-      `UPDATE pipeline_log
-       SET finished_at=?, status='scraping_done', scraped_count=?, dupes_skipped=?,
-           inserted_count=?, error_count=?, errors_json=?
-       WHERE run_id=?`,
-      [
-        new Date().toISOString(), stats.scraped, stats.dupes,
-        stats.inserted, stats.errors, JSON.stringify(errors),
-        runId,
-      ],
-    );
-
-    ioInstance?.emit('pipeline_done', { runId, stats });
-    logger.info({ runId, stats }, '[PIPELINE] Scraping done — enrichment running in background');
-
-    // Background: Steps 4-6 — non-blocking, runs while next scrape starts
-    setImmediate(async () => {
-      let enriched = inserted;
-      try {
-        logger.info({ runId }, '[PIPELINE] Step 4: Enriching leads (background)');
-        enriched = await enrichBatch(inserted, config, ioInstance);
-        stats.enriched = enriched.filter((l) => l.enriched_at).length;
-        logger.info({ runId, enriched: stats.enriched }, '[PIPELINE] Enrichment complete');
-      } catch (err) {
-        logger.error({ runId, err }, '[PIPELINE] Enrichment failed');
-      }
-
-      let refined = enriched;
-      try {
-        logger.info({ runId }, '[PIPELINE] Step 5: Refining outreach (background)');
-        refined = await refineOutreach(enriched, config);
-        logger.info({ runId }, '[PIPELINE] Outreach refinement complete');
-      } catch (err) {
-        logger.error({ runId, err }, '[PIPELINE] Refinement failed');
-      }
-
-      try {
-        logger.info({ runId }, '[PIPELINE] Step 6: Updating enrichment in DB (background)');
-        const updateStmt = `UPDATE leads SET pain_points=?, reason_for_outreach=?, lead_quality=?,
-          confidence_score=?, enriched_at=?, status=? WHERE email=?`;
-        for (const lead of refined) {
-          if (lead.enriched_at) {
-            await db.run(updateStmt, [
-              lead.pain_points || '', lead.reason_for_outreach || '',
-              lead.lead_quality || null, lead.confidence_score || null,
-              lead.enriched_at, lead.status || 'enriched', lead.email,
-            ]);
-          } else {
-            await db.run(
-              `UPDATE leads SET enrichment_attempts = enrichment_attempts + 1 WHERE email = ?`,
-              [lead.email],
-            );
-          }
-        }
-        const finalStatus = errors.length === 0 ? 'success' : stats.inserted > 0 ? 'partial' : 'failed';
-        await db.run(
-          `UPDATE pipeline_log SET status=?, enriched_count=? WHERE run_id=?`,
-          [finalStatus, stats.enriched, runId],
-        );
-        logger.info({ runId }, '[PIPELINE] Background enrichment complete');
-      } catch (err) {
-        logger.error({ runId, err }, '[PIPELINE] Background DB enrichment update failed');
-      }
+function getOrInitState(tenantId, campaignId) {
+  const key = stateKey(tenantId, campaignId);
+  if (!stateMap.has(key)) {
+    stateMap.set(key, {
+      isRunning: false, lastRunAt: null, nextRunAt: null,
+      status: 'idle', todayInserted: 0, dailyTarget: 0,
     });
-
-    return { runId, stats };
-  } catch (err) {
-    logger.error({ runId, err }, '[PIPELINE] Fatal error');
-    errors.push(`Fatal: ${err.message}`);
-    await db.run(
-      `UPDATE pipeline_log SET finished_at=?, status='failed', errors_json=? WHERE run_id=?`,
-      [new Date().toISOString(), JSON.stringify(errors), runId],
-    );
-    pipelineState.status = 'idle';
-    ioInstance?.emit('pipeline_error', { runId, error: err.message });
-    return null;
-  } finally {
-    isRunning = false;
   }
+  return stateMap.get(key);
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
-export function getState() {
-  return { ...pipelineState, isRunning };
+export function getState(tenantId, campaignId) {
+  if (!tenantId) return { isRunning: false, status: 'idle', todayInserted: 0, dailyTarget: 0 };
+  return { ...getOrInitState(tenantId, campaignId) };
 }
 
-export async function triggerNow() {
-  if (isRunning) return { conflict: true };
-  // Run async — don't await, return immediately
-  setTimeout(() => runPipeline('manual'), 0);
-  return { conflict: false };
-}
+export function reschedule(tenantId, campaignId, intervalMinutes) {
+  if (!tenantId || !campaignId) return;
+  const key = stateKey(tenantId, campaignId);
 
-let continuousLoopActive = false;
+  const existing = cronMap.get(key);
+  if (existing?.task) { existing.task.stop(); }
+  cronMap.delete(key);
 
-// Return how many leads were inserted today (UTC day)
-async function getTodayInsertedCount() {
-  const db = getDb();
-  const todayUtc = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-  const row = await db.get(
-    `SELECT COUNT(*) as cnt FROM leads WHERE created_at >= ?`,
-    [`${todayUtc}T00:00:00.000Z`],
-  );
-  return row?.cnt ?? 0;
-}
-
-// Wait until the start of the next UTC midnight
-function msUntilMidnightUtc() {
-  const now = new Date();
-  const midnight = new Date(Date.UTC(
-    now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1,
-  ));
-  return midnight - now;
-}
-
-async function continuousLoop() {
-  continuousLoopActive = true;
-  logger.info('Continuous pipeline loop started');
-
-  while (continuousLoopActive) {
-    const config = readConfig();
-    const dailyTarget = parseInt(config.daily_lead_target || '0', 10);
-
-    // Check daily target before starting a run
-    pipelineState.dailyTarget = dailyTarget;
-    if (dailyTarget > 0) {
-      const todayCount = await getTodayInsertedCount();
-      pipelineState.todayInserted = todayCount;
-      if (todayCount >= dailyTarget) {
-        const waitMs = msUntilMidnightUtc();
-        const waitMins = Math.ceil(waitMs / 60000);
-        logger.info(
-          { todayCount, dailyTarget, waitMins },
-          '[PIPELINE] Daily target reached — pausing until midnight UTC',
-        );
-        pipelineState.status = 'target_reached';
-        ioInstance?.emit('pipeline_target_reached', { todayCount, dailyTarget, resumeAt: new Date(Date.now() + waitMs).toISOString() });
-
-        // Wait in small chunks so we can break if continuousLoopActive is set to false
-        const chunkMs = 30_000;
-        let remaining = waitMs;
-        while (remaining > 0 && continuousLoopActive) {
-          await new Promise((r) => setTimeout(r, Math.min(chunkMs, remaining)));
-          remaining -= chunkMs;
-          // Re-check: if the target was raised or reset, exit the wait early
-          const newConfig = readConfig();
-          const newTarget = parseInt(newConfig.daily_lead_target || '0', 10);
-          const newCount = await getTodayInsertedCount();
-          if (newTarget === 0 || newCount < newTarget) break;
-        }
-        pipelineState.status = 'idle';
-        continue;
-      }
-    }
-
-    await runPipeline('scheduler');
-    if (!continuousLoopActive) break;
-    // Small breathing gap between runs
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-  }
-  logger.info('Continuous pipeline loop stopped');
-}
-
-export function reschedule(intervalMinutes) {
-  // Stop any existing cron
-  if (cronTask) {
-    cronTask.stop();
-    cronTask = null;
-  }
-  // Stop any existing continuous loop
-  continuousLoopActive = false;
-
-  if (Number(intervalMinutes) === 0) {
-    // Continuous mode — run immediately and loop forever
-    pipelineState.nextRunAt = new Date().toISOString();
-    continuousLoop();
-    logger.info('Scheduler started in continuous mode');
-    return;
-  }
+  const interval = Number(intervalMinutes);
+  if (interval === 0) return; // manual only
 
   const valid = [15, 30, 60, 360];
-  const interval = valid.includes(Number(intervalMinutes)) ? Number(intervalMinutes) : 30;
-  const cronExpr = `*/${interval} * * * *`;
+  const min = valid.includes(interval) ? interval : 30;
+  const cronExpr = `*/${min} * * * *`;
 
-  cronTask = cron.schedule(cronExpr, () => runPipeline('scheduler'));
-  pipelineState.nextRunAt = new Date(Date.now() + interval * 60 * 1000).toISOString();
+  const state = getOrInitState(tenantId, campaignId);
+  state.nextRunAt = new Date(Date.now() + min * 60 * 1000).toISOString();
 
-  logger.info({ cronExpr, interval }, 'Scheduler started');
+  const task = cron.schedule(cronExpr, async () => {
+    try {
+      await publishJob(`pipeline.${tenantId}.${campaignId}`, {
+        tenantId, campaignId, triggeredBy: 'scheduler',
+      });
+      state.nextRunAt = new Date(Date.now() + min * 60 * 1000).toISOString();
+    } catch (err) {
+      logger.error({ err, tenantId, campaignId }, '[SCHEDULER] Failed to publish cron job');
+    }
+  });
+
+  cronMap.set(key, { task });
+  logger.info({ tenantId, campaignId, cronExpr }, '[SCHEDULER] Campaign scheduled');
 }
 
-export function initScheduler(io) {
+export async function initScheduler(io) {
   ioInstance = io;
-  const config = readConfig();
-  reschedule(parseInt(config.scraping_interval || '30', 10));
-  startEnrichmentCron();
-  logger.info('Scheduler initialized');
-}
-
-// ── Hourly enrichment cron ────────────────────────────────────────────────────
-// Picks up any leads that were inserted but never enriched (e.g. Ollama was
-// offline, or the pipeline run finished before enrichment could complete).
-let enrichmentCronTask = null;
-let isSweepRunning = false;
-
-// Process 5 leads per sweep so each run finishes well within the 5-min window
-// even on CPU-only inference (~2-3 min/lead × 5 leads × 2 passes ≈ 25-30 min per
-// batch, but the guard ensures no stacking).  With 766 leads this clears in ~26 runs.
-const SWEEP_LIMIT = 5;
-
-async function runEnrichmentSweep() {
-  if (isSweepRunning) {
-    logger.info('[ENRICH-CRON] Previous sweep still running — skipping this tick');
-    return;
-  }
-  isSweepRunning = true;
-  const db = getDb();
-  const config = readConfig();
+  const db   = getDb();
 
   try {
-    // Take only the next SWEEP_LIMIT unenriched leads so the sweep always finishes.
-    const pending = await db.all(
-      `SELECT * FROM leads WHERE (enriched_at IS NULL OR enriched_at = '')
-       AND email != ''
-       ORDER BY created_at DESC
-       LIMIT ${SWEEP_LIMIT}`,
+    const campaigns = await db.all(
+      `SELECT id, tenant_id, scraping_interval FROM campaigns WHERE status = 'active'`,
     );
-
-    if (!pending.length) {
-      logger.info('[ENRICH-CRON] No pending leads to enrich');
-      return;
+    for (const c of campaigns) {
+      const interval = parseInt(c.scraping_interval || '30', 10);
+      if (interval > 0) reschedule(c.tenant_id, c.id, interval);
     }
-
-    logger.info({ count: pending.length }, '[ENRICH-CRON] Starting enrichment sweep');
-
-    const updateStmt = `UPDATE leads SET pain_points=?, reason_for_outreach=?, lead_quality=?,
-      confidence_score=?, enriched_at=?, status=? WHERE email=?`;
-
-    let done = 0;
-    // Process one lead at a time and write to DB immediately — prevents data loss
-    // if the sweep crashes or is interrupted mid-batch.
-    for (const lead of pending) {
-      try {
-        const [enriched] = await enrichBatch([lead], config, ioInstance);
-        const [refined]  = await refineOutreach([enriched], config);
-
-        if (refined?.enriched_at) {
-          await db.run(updateStmt, [
-            refined.pain_points || '', refined.reason_for_outreach || '',
-            refined.lead_quality || null, refined.confidence_score || null,
-            refined.enriched_at, refined.status || 'enriched', refined.email,
-          ]);
-          done++;
-          logger.info({ email: lead.email }, '[ENRICH-CRON] Lead enriched and saved');
-          ioInstance?.emit('leads_enriched', { count: 1 });
-        } else {
-          await db.run(
-            `UPDATE leads SET enrichment_attempts = enrichment_attempts + 1 WHERE email = ?`,
-            [lead.email],
-          );
-          logger.warn({ email: lead.email }, '[ENRICH-CRON] Lead enrichment failed — attempt incremented');
-        }
-      } catch (leadErr) {
-        logger.error({ email: lead.email, err: leadErr.message }, '[ENRICH-CRON] Error on single lead');
-        await db.run(
-          `UPDATE leads SET enrichment_attempts = enrichment_attempts + 1 WHERE email = ?`,
-          [lead.email],
-        ).catch(() => {});
-      }
-    }
-
-    logger.info({ done, failed: pending.length - done }, '[ENRICH-CRON] Sweep complete');
+    logger.info(`[SCHEDULER] Initialized ${campaigns.length} campaign schedules`);
   } catch (err) {
-    logger.error({ err: err.message }, '[ENRICH-CRON] Sweep failed');
-  } finally {
-    isSweepRunning = false;
+    logger.error({ err }, '[SCHEDULER] Failed to initialize schedules');
   }
 }
 
-function startEnrichmentCron() {
-  if (enrichmentCronTask) enrichmentCronTask.stop();
-  // Run every 5 minutes so unenriched leads get picked up quickly
-  enrichmentCronTask = cron.schedule('*/5 * * * *', runEnrichmentSweep);
-  logger.info('[ENRICH-CRON] 5-minute enrichment cron started');
-}
+export function getIo() { return ioInstance; }
+
