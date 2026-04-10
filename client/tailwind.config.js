@@ -4,7 +4,16 @@ export default {
   darkMode: 'class',
   theme: {
     extend: {
-      colors: {},
+      colors: {
+        accent: 'var(--accent)',
+        hot:    'var(--hot)',
+        warm:   'var(--warm)',
+        cold:   'var(--cold)',
+      },
+      fontFamily: {
+        display: ['Syne', 'system-ui', 'sans-serif'],
+        mono:    ['"Space Mono"', 'monospace'],
+      },
       animation: {
         'fade-out':   'fadeOut 5s ease-in-out forwards',
         'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',

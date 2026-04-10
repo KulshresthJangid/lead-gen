@@ -47,13 +47,13 @@ function Sidebar() {
       <div className="px-5 py-5" style={{ borderBottom: '1px solid var(--border)' }}>
         <div className="flex items-center gap-2.5">
           <div
-            className="w-7 h-7 rounded-lg flex items-center justify-center text-xs font-black select-none"
-            style={{ backgroundColor: 'var(--btn-bg)', color: 'var(--btn-text)' }}
+            className="w-7 h-7 rounded-lg flex items-center justify-center text-sm select-none"
+            style={{ background: 'var(--accent)', color: '#fff', boxShadow: '0 2px 8px rgba(255,85,51,0.35)' }}
           >
-            LG
+            💧
           </div>
-          <span className="text-sm font-black tracking-tight" style={{ color: 'var(--text-1)' }}>
-            LeadGen Pro
+          <span className="text-sm font-black tracking-tight" style={{ fontFamily: 'var(--font-display)', color: 'var(--text-1)' }}>
+            Drip
           </span>
         </div>
         {user?.tenantName && (
