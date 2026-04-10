@@ -39,11 +39,12 @@ function StatCard({ label, value, icon: Icon, loading, delay }) {
   );
 }
 
-export default function StatsCards() {
+export default function StatsCards({ campaignId }) {
   const { data: stats, isLoading } = useQuery({
-    queryKey: ['stats'],
+    queryKey: ['stats', campaignId],
     queryFn: async () => {
-      const res = await apiClient.get('/stats');
+      const url = campaignId ? `/stats?campaignId=${campaignId}` : '/stats';
+      const res = await apiClient.get(url);
       return res.data;
     },
     refetchInterval: 60_000,
