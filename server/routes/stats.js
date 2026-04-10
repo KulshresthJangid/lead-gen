@@ -7,9 +7,16 @@ const router = Router();
 router.get('/', async (req, res, next) => {
   try {
     const db = getDb();
+    const tenantId = req.tenantId;
+    const campaignId = req.query.campaignId || null;
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
       .toISOString()
       .split('T')[0];
+
+    const campaignFilter = campaignId ? ' AND campaign_id = ?' : '';
+    const baseParams = campaignId ? [tenantId, campaignId] : [tenantId];
+    const dateParams = campaignId ? [tenantId, campaignId, thirtyDaysAgo] : [tenantId, thirtyDaysAgo];
+    const logParams  = campaignId ? [tenantId, campaignId] : [tenantId];
 
     const [
       totalRow,
@@ -22,26 +29,28 @@ router.get('/', async (req, res, next) => {
       enrichedRow,
       logRows,
     ] = await Promise.all([
-      db.get(`SELECT COUNT(*) as count FROM leads WHERE status != 'archived'`),
-      db.all(`SELECT lead_quality, COUNT(*) as count FROM leads WHERE status != 'archived' GROUP BY lead_quality`),
-      db.all(`SELECT manual_category, COUNT(*) as count FROM leads WHERE status != 'archived' GROUP BY manual_category`),
-      db.get(`SELECT AVG(confidence_score) as avg FROM leads WHERE confidence_score IS NOT NULL AND status != 'archived'`),
+      db.get(`SELECT COUNT(*) as count FROM leads WHERE tenant_id = ?${campaignFilter} AND status != 'archived'`, baseParams),
+      db.all(`SELECT lead_quality, COUNT(*) as count FROM leads WHERE tenant_id = ?${campaignFilter} AND status != 'archived' GROUP BY lead_quality`, baseParams),
+      db.all(`SELECT manual_category, COUNT(*) as count FROM leads WHERE tenant_id = ?${campaignFilter} AND status != 'archived' GROUP BY manual_category`, baseParams),
+      db.get(`SELECT AVG(confidence_score) as avg FROM leads WHERE tenant_id = ?${campaignFilter} AND confidence_score IS NOT NULL AND status != 'archived'`, baseParams),
       db.all(
         `SELECT DATE(created_at) as date, COUNT(*) as count
-         FROM leads WHERE created_at >= ? AND status != 'archived'
+         FROM leads WHERE tenant_id = ?${campaignFilter} AND created_at >= ? AND status != 'archived'
          GROUP BY DATE(created_at) ORDER BY date ASC`,
-        [thirtyDaysAgo],
+        dateParams,
       ),
       db.all(
         `SELECT company_name, COUNT(*) as count FROM leads
-         WHERE status != 'archived' AND company_name != ''
+         WHERE tenant_id = ?${campaignFilter} AND status != 'archived' AND company_name != ''
          GROUP BY company_name ORDER BY count DESC LIMIT 10`,
+        baseParams,
       ),
-      db.get(`SELECT COUNT(*) as count FROM leads WHERE manual_category = 'pending' AND status != 'archived'`),
-      db.get(`SELECT COUNT(*) as count FROM leads WHERE enriched_at IS NOT NULL AND status != 'archived'`),
+      db.get(`SELECT COUNT(*) as count FROM leads WHERE tenant_id = ?${campaignFilter} AND manual_category = 'pending' AND status != 'archived'`, baseParams),
+      db.get(`SELECT COUNT(*) as count FROM leads WHERE tenant_id = ?${campaignFilter} AND enriched_at IS NOT NULL AND status != 'archived'`, baseParams),
       db.all(
         `SELECT dupes_skipped, inserted_count FROM pipeline_log
-         WHERE status != 'running' ORDER BY started_at DESC LIMIT 100`,
+         WHERE tenant_id = ?${campaignId ? ' AND campaign_id = ?' : ''} AND status != 'running' ORDER BY started_at DESC LIMIT 100`,
+        logParams,
       ),
     ]);
 

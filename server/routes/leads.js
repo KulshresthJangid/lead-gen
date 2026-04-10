@@ -5,6 +5,7 @@ import { validate } from '../middleware/validate.js';
 import { leadsToCSV } from '../utils/csv.js';
 import { enrichBatch, refineOutreach } from '../workers/enricher.js';
 import { readConfig } from '../utils/config.js';
+import { requireRole } from '../middleware/requireRole.js';
 
 const router = Router();
 
@@ -12,20 +13,21 @@ const router = Router();
 const ALLOWED_SORT = new Set(['confidence_score', 'created_at', 'lead_quality', 'full_name', 'company_name']);
 const ALLOWED_DIR = new Set(['asc', 'desc']);
 
-function buildWhereClause(query) {
-  const conditions = ["status != 'archived'"];
-  const params = [];
+function buildWhereClause(query, tenantId) {
+  const conditions = ['tenant_id = ?', "status != 'archived'"];
+  const params = [tenantId];
 
+  if (query.campaignId) { conditions.push('campaign_id = ?'); params.push(query.campaignId); }
   if (query.search) {
     conditions.push('(full_name LIKE ? OR company_name LIKE ? OR email LIKE ?)');
     const s = `%${query.search}%`;
     params.push(s, s, s);
   }
-  if (query.quality) { conditions.push('lead_quality = ?'); params.push(query.quality); }
-  if (query.category) { conditions.push('manual_category = ?'); params.push(query.category); }
-  if (query.source) { conditions.push('source = ?'); params.push(query.source); }
-  if (query.dateFrom) { conditions.push('created_at >= ?'); params.push(query.dateFrom); }
-  if (query.dateTo) { conditions.push('created_at <= ?'); params.push(`${query.dateTo}T23:59:59`); }
+  if (query.quality)   { conditions.push('lead_quality = ?');    params.push(query.quality); }
+  if (query.category)  { conditions.push('manual_category = ?'); params.push(query.category); }
+  if (query.source)    { conditions.push('source = ?');          params.push(query.source); }
+  if (query.dateFrom)  { conditions.push('created_at >= ?');     params.push(query.dateFrom); }
+  if (query.dateTo)    { conditions.push('created_at <= ?');     params.push(`${query.dateTo}T23:59:59`); }
 
   return { where: `WHERE ${conditions.join(' AND ')}`, params };
 }
@@ -40,7 +42,7 @@ router.get('/', async (req, res, next) => {
     const sortBy = ALLOWED_SORT.has(req.query.sortBy) ? req.query.sortBy : 'created_at';
     const sortDir = ALLOWED_DIR.has(req.query.sortDir?.toLowerCase()) ? req.query.sortDir.toLowerCase() : 'desc';
 
-    const { where, params } = buildWhereClause(req.query);
+    const { where, params } = buildWhereClause(req.query, req.tenantId);
 
     const [{ total }] = await db.all(`SELECT COUNT(*) as total FROM leads ${where}`, params);
     const data = await db.all(
@@ -58,7 +60,7 @@ router.get('/', async (req, res, next) => {
 router.post('/export', async (req, res, next) => {
   try {
     const db = getDb();
-    const { where, params } = buildWhereClause(req.body || {});
+    const { where, params } = buildWhereClause({ ...req.body, ...(req.body?.campaignId ? {} : {}) }, req.tenantId);
     const leads = await db.all(`SELECT * FROM leads ${where} ORDER BY created_at DESC`, params);
     const csv = leadsToCSV(leads);
     const filename = `leads-${new Date().toISOString().split('T')[0]}.csv`;
@@ -74,7 +76,10 @@ router.post('/export', async (req, res, next) => {
 router.get('/:id', async (req, res, next) => {
   try {
     const db = getDb();
-    const lead = await db.get('SELECT * FROM leads WHERE id = ?', [req.params.id]);
+    const lead = await db.get(
+      'SELECT * FROM leads WHERE id = ? AND tenant_id = ?',
+      [req.params.id, req.tenantId],
+    );
     if (!lead) return res.status(404).json({ error: 'Lead not found' });
     res.json(lead);
   } catch (err) {
@@ -88,16 +93,17 @@ const categorizeSchema = z.object({
   manual_notes: z.string().max(1000).optional().default(''),
 });
 
-router.put('/:id/categorize', validate(categorizeSchema), async (req, res, next) => {
+router.put('/:id/categorize', requireRole('owner', 'admin', 'member'), validate(categorizeSchema), async (req, res, next) => {
   try {
     const db = getDb();
     const { manual_category, manual_notes } = req.body;
-    await db.run(
-      `UPDATE leads SET manual_category=?, manual_notes=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
-      [manual_category, manual_notes, req.params.id],
+    const result = await db.run(
+      `UPDATE leads SET manual_category=?, manual_notes=?, updated_at=CURRENT_TIMESTAMP
+       WHERE id=? AND tenant_id=?`,
+      [manual_category, manual_notes, req.params.id, req.tenantId],
     );
+    if (result.changes === 0) return res.status(404).json({ error: 'Lead not found' });
     const updated = await db.get('SELECT * FROM leads WHERE id = ?', [req.params.id]);
-    if (!updated) return res.status(404).json({ error: 'Lead not found' });
     res.json(updated);
   } catch (err) {
     next(err);
@@ -105,20 +111,23 @@ router.put('/:id/categorize', validate(categorizeSchema), async (req, res, next)
 });
 
 // ── POST /api/leads/:id/enrich ─────────────────────────────────────────────────
-router.post('/:id/enrich', async (req, res, next) => {
+router.post('/:id/enrich', requireRole('owner', 'admin', 'member'), async (req, res, next) => {
   try {
     const db = getDb();
-    const lead = await db.get('SELECT * FROM leads WHERE id = ?', [req.params.id]);
+    const lead = await db.get(
+      'SELECT * FROM leads WHERE id = ? AND tenant_id = ?',
+      [req.params.id, req.tenantId],
+    );
     if (!lead) return res.status(404).json({ error: 'Lead not found' });
 
-    const config = readConfig();
+    const config = await readConfig(req.tenantId);
     const [enriched] = await enrichBatch([lead], config);
     const [refined]  = await refineOutreach([enriched], config);
 
     if (refined?.enriched_at) {
       await db.run(
         `UPDATE leads SET pain_points=?, reason_for_outreach=?, lead_quality=?,
-         confidence_score=?, enriched_at=?, status=? WHERE id=?`,
+         confidence_score=?, enriched_at=?, status=? WHERE id=? AND tenant_id=?`,
         [
           refined.pain_points || '',
           refined.reason_for_outreach || '',
@@ -127,6 +136,7 @@ router.post('/:id/enrich', async (req, res, next) => {
           refined.enriched_at,
           'enriched',
           req.params.id,
+          req.tenantId,
         ],
       );
     }
@@ -139,13 +149,14 @@ router.post('/:id/enrich', async (req, res, next) => {
 });
 
 // ── DELETE /api/leads/:id (soft delete) ───────────────────────────────────────
-router.delete('/:id', async (req, res, next) => {
+router.delete('/:id', requireRole('owner', 'admin', 'member'), async (req, res, next) => {
   try {
     const db = getDb();
-    await db.run(
-      `UPDATE leads SET status='archived', updated_at=CURRENT_TIMESTAMP WHERE id=?`,
-      [req.params.id],
+    const result = await db.run(
+      `UPDATE leads SET status='archived', updated_at=CURRENT_TIMESTAMP WHERE id=? AND tenant_id=?`,
+      [req.params.id, req.tenantId],
     );
+    if (result.changes === 0) return res.status(404).json({ error: 'Lead not found' });
     res.json({ success: true });
   } catch (err) {
     next(err);

@@ -10,7 +10,11 @@ export function requireAuth(req, res, next) {
   }
 
   try {
-    req.user = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user     = decoded;
+    req.userId   = decoded.sub;
+    req.tenantId = decoded.tenantId;
+    req.role     = decoded.role;
     return next();
   } catch (err) {
     const message = err.name === 'TokenExpiredError' ? 'Token expired' : 'Invalid token';

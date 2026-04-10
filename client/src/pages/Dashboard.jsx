@@ -9,6 +9,7 @@ import ManualCategoryModal from '../components/ManualCategoryModal.jsx';
 import { useLeads } from '../hooks/useLeads.js';
 import { useSocket } from '../hooks/useSocket.js';
 import { usePipeline } from '../hooks/usePipeline.js';
+import { useCampaign } from '../context/CampaignContext.jsx';
 
 const DEFAULT_FILTERS = { page: 1, limit: 25, sortBy: 'created_at', sortDir: 'desc' };
 
@@ -16,8 +17,13 @@ export default function Dashboard() {
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
   const [selectedLead, setSelectedLead] = useState(null);
   const [newLeadIds, setNewLeadIds] = useState(new Set());
+  const { currentCampaign } = useCampaign();
 
-  const { data, isLoading } = useLeads(filters);
+  const effectiveFilters = currentCampaign
+    ? { ...filters, campaignId: currentCampaign.id }
+    : filters;
+
+  const { data, isLoading } = useLeads(effectiveFilters);
 
   useSocket({
     onNewLeads: ({ count }) => {
@@ -41,10 +47,10 @@ export default function Dashboard() {
             {data?.total != null ? `${data.total.toLocaleString()} leads collected` : 'Loading…'}
           </p>
         </div>
-        <ExportButton filters={filters} />
+        <ExportButton filters={effectiveFilters} />
       </div>
 
-      <StatsCards />
+      <StatsCards campaignId={currentCampaign?.id} />
       <FiltersPanel filters={filters} onChange={handleFiltersChange} />
       <LeadTable
         leads={data?.leads ?? []}

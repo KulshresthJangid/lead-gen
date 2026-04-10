@@ -17,8 +17,13 @@ import pipelineRouter from './routes/pipeline.js';
 import settingsRouter from './routes/settings.js';
 import authRouter from './routes/auth.js';
 import aiLogsRouter from './routes/ai-logs.js';
+import campaignsRouter from './routes/campaigns.js';
+import usersRouter from './routes/users.js';
 import { requireAuth } from './middleware/authMiddleware.js';
 import { initScheduler } from './workers/scheduler.js';
+import { connectRabbitMQ } from './utils/rabbitmq.js';
+import { startPipelineConsumer } from './workers/pipelineWorker.js';
+import { startEnrichConsumer } from './workers/enrichWorker.js';
 import logger from './utils/logger.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -43,11 +48,13 @@ app.use(rateLimiter);
 app.use('/api/auth', authRouter);
 
 // All other API routes require a valid JWT
-app.use('/api/leads',    requireAuth, leadsRouter);
-app.use('/api/stats',    requireAuth, statsRouter);
-app.use('/api/pipeline', requireAuth, pipelineRouter);
-app.use('/api/settings', requireAuth, settingsRouter);
-app.use('/api/ai-logs',  requireAuth, aiLogsRouter);
+app.use('/api/leads',     requireAuth, leadsRouter);
+app.use('/api/stats',     requireAuth, statsRouter);
+app.use('/api/pipeline',  requireAuth, pipelineRouter);
+app.use('/api/settings',  requireAuth, settingsRouter);
+app.use('/api/ai-logs',   requireAuth, aiLogsRouter);
+app.use('/api/campaigns', requireAuth, campaignsRouter);
+app.use('/api/users',     requireAuth, usersRouter);
 
 // ── Static (production) ───────────────────────────────────────────────────────
 if (process.env.NODE_ENV === 'production') {
@@ -71,7 +78,19 @@ io.on('connection', (socket) => {
 async function start() {
   try {
     await initDb();
-    initScheduler(io);
+
+    // RabbitMQ — optional; server runs without it but pipelines won't queue
+    let rmqChannel = null;
+    try {
+      const db = (await import('./db.js')).getDb();
+      rmqChannel = await connectRabbitMQ();
+      await startPipelineConsumer(rmqChannel, db);
+      await startEnrichConsumer(rmqChannel);
+    } catch (err) {
+      logger.warn({ err: err.message }, '[BOOT] RabbitMQ unavailable — pipeline workers inactive');
+    }
+
+    await initScheduler(io);
     httpServer.listen(PORT, () =>
       logger.info(`Server listening on http://localhost:${PORT}`),
     );
