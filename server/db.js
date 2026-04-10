@@ -1,9 +1,11 @@
 import 'dotenv/config';
 import BetterSqlite3 from 'better-sqlite3';
 import pg from 'pg';
+import bcrypt from 'bcryptjs';
 import { mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { randomUUID } from 'crypto';
 import logger from './utils/logger.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -61,6 +63,59 @@ const MIGRATIONS = [
   `CREATE INDEX IF NOT EXISTS idx_leads_domain    ON leads(company_domain)`,
   `CREATE INDEX IF NOT EXISTS idx_leads_created   ON leads(created_at)`,
   `CREATE INDEX IF NOT EXISTS idx_leads_hash      ON leads(email_hash)`,
+  // Multi-tenancy migrations
+  `CREATE TABLE IF NOT EXISTS tenants (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    slug        TEXT UNIQUE NOT NULL,
+    plan        TEXT DEFAULT 'free',
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS users (
+    id            TEXT PRIMARY KEY,
+    tenant_id     TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    email         TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    name          TEXT NOT NULL,
+    role          TEXT NOT NULL DEFAULT 'member'
+                    CHECK(role IN ('owner','admin','member','viewer')),
+    invited_by    TEXT,
+    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(tenant_id, email)
+  )`,
+  `CREATE TABLE IF NOT EXISTS invitations (
+    id          TEXT PRIMARY KEY,
+    tenant_id   TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    email       TEXT NOT NULL,
+    role        TEXT NOT NULL DEFAULT 'member',
+    invited_by  TEXT NOT NULL,
+    expires_at  DATETIME NOT NULL,
+    accepted_at DATETIME,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(tenant_id, email)
+  )`,
+  `CREATE TABLE IF NOT EXISTS campaigns (
+    id                  TEXT PRIMARY KEY,
+    tenant_id           TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    name                TEXT NOT NULL,
+    description         TEXT DEFAULT '',
+    color               TEXT DEFAULT '#1A73E8',
+    product_description TEXT DEFAULT '',
+    icp_description     TEXT DEFAULT '',
+    scraper_targets     TEXT DEFAULT '[]',
+    scraping_interval   INTEGER DEFAULT 30,
+    daily_lead_target   INTEGER DEFAULT 0,
+    status              TEXT DEFAULT 'active'
+                          CHECK(status IN ('active','paused','archived')),
+    created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS tenant_settings (
+    tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    key       TEXT NOT NULL,
+    value     TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, key)
+  )`,
 ];
 
 const DEFAULT_SETTINGS = {
@@ -76,6 +131,11 @@ const DEFAULT_SETTINGS = {
 // ---------------------------------------------------------------------------
 // SQLite interface (better-sqlite3 is synchronous, wrapped for async compat)
 // ---------------------------------------------------------------------------
+function columnExistsSQLite(rawDb, table, column) {
+  const cols = rawDb.prepare(`PRAGMA table_info(${table})`).all();
+  return cols.some(c => c.name === column);
+}
+
 function createSQLiteInterface(rawDb) {
   return {
     get: async (sql, params = []) => {
@@ -91,13 +151,14 @@ function createSQLiteInterface(rawDb) {
       return rawDb.prepare(sql).run(...flat);
     },
     exec: async (sql) => rawDb.exec(sql),
-    insertLeads: async (leads) => {
+    columnExists: async (table, column) => columnExistsSQLite(rawDb, table, column),
+    insertLeads: async (leads, tenantId, campaignId) => {
       const stmt = rawDb.prepare(`
         INSERT OR IGNORE INTO leads
           (full_name, job_title, company_name, company_domain, email, linkedin_url, location,
            pain_points, reason_for_outreach, lead_quality, confidence_score, source, email_hash,
-           enrichment_attempts, enriched_at, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           enrichment_attempts, enriched_at, status, tenant_id, campaign_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       const insertTx = rawDb.transaction((items) => {
         const inserted = [];
@@ -119,6 +180,8 @@ function createSQLiteInterface(rawDb) {
             lead.enrichment_attempts || 0,
             lead.enriched_at || null,
             lead.status || 'new',
+            tenantId || null,
+            campaignId || null,
           );
           if (res.changes > 0) inserted.push(lead);
         }
@@ -153,7 +216,14 @@ function createPgInterface(pool) {
       return { changes: res.rowCount };
     },
     exec: async (sql) => pool.query(sql),
-    insertLeads: async (leads) => {
+    columnExists: async (table, column) => {
+      const res = await pool.query(
+        `SELECT 1 FROM information_schema.columns WHERE table_name=$1 AND column_name=$2`,
+        [table, column],
+      );
+      return res.rowCount > 0;
+    },
+    insertLeads: async (leads, tenantId, campaignId) => {
       const client = await pool.connect();
       const inserted = [];
       try {
@@ -163,8 +233,8 @@ function createPgInterface(pool) {
             `INSERT INTO leads
                (full_name, job_title, company_name, company_domain, email, linkedin_url, location,
                 pain_points, reason_for_outreach, lead_quality, confidence_score, source, email_hash,
-                enrichment_attempts, enriched_at, status)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+                enrichment_attempts, enriched_at, status, tenant_id, campaign_id)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
              ON CONFLICT (email) DO NOTHING
              RETURNING id`,
             [
@@ -173,7 +243,7 @@ function createPgInterface(pool) {
               lead.location || '', lead.pain_points || '', lead.reason_for_outreach || '',
               lead.lead_quality || null, lead.confidence_score || null, lead.source || '',
               lead.email_hash, lead.enrichment_attempts || 0, lead.enriched_at || null,
-              lead.status || 'new',
+              lead.status || 'new', tenantId || null, campaignId || null,
             ],
           );
           if (res.rows.length > 0) inserted.push(lead);
@@ -214,13 +284,39 @@ export async function initDb() {
     db = createSQLiteInterface(rawDb);
   }
 
-  // Seed default settings (check-first to avoid overwriting user data)
+  // ALTER TABLE: add new columns if they don't exist yet
+  const alterations = [
+    { table: 'leads',        column: 'tenant_id',   ddl: 'ALTER TABLE leads ADD COLUMN tenant_id TEXT' },
+    { table: 'leads',        column: 'campaign_id',  ddl: 'ALTER TABLE leads ADD COLUMN campaign_id TEXT' },
+    { table: 'pipeline_log', column: 'tenant_id',   ddl: 'ALTER TABLE pipeline_log ADD COLUMN tenant_id TEXT' },
+    { table: 'pipeline_log', column: 'campaign_id',  ddl: 'ALTER TABLE pipeline_log ADD COLUMN campaign_id TEXT' },
+  ];
+  for (const { table, column, ddl } of alterations) {
+    const exists = await db.columnExists(table, column);
+    if (!exists) {
+      await db.run(ddl);
+      logger.info(`[DB] Added column ${table}.${column}`);
+    }
+  }
+
+  // Indexes for new columns
+  const indexes = [
+    'CREATE INDEX IF NOT EXISTS idx_leads_tenant    ON leads(tenant_id)',
+    'CREATE INDEX IF NOT EXISTS idx_leads_campaign  ON leads(campaign_id)',
+    'CREATE INDEX IF NOT EXISTS idx_plog_tenant     ON pipeline_log(tenant_id)',
+    'CREATE INDEX IF NOT EXISTS idx_plog_campaign   ON pipeline_log(campaign_id)',
+  ];
+  for (const idx of indexes) await db.run(idx);
+
+  // Seed default settings (legacy table — keep for backward compat during migration)
   for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {
     const existing = await db.get('SELECT key FROM settings WHERE key = ?', [key]);
     if (!existing) {
       await db.run('INSERT INTO settings (key, value) VALUES (?, ?)', [key, value]);
     }
   }
+
+  await migrateExistingData(db);
 
   logger.info(`Database initialized (${DB_TYPE})`);
   return db;
@@ -229,4 +325,158 @@ export async function initDb() {
 export function getDb() {
   if (!db) throw new Error('Database not initialized. Call initDb() first.');
   return db;
+}
+
+// ---------------------------------------------------------------------------
+// Slug helper
+// ---------------------------------------------------------------------------
+function slugify(str) {
+  return str
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+// ---------------------------------------------------------------------------
+// Phase 9 — Migrate legacy admin/admin data to Default Organisation (Tenant 1)
+// ---------------------------------------------------------------------------
+export async function migrateExistingData(database) {
+  try {
+    const tenantCount = await database.get('SELECT COUNT(*) as n FROM tenants');
+    const unassignedLeads = await database.get('SELECT COUNT(*) as n FROM leads WHERE tenant_id IS NULL');
+
+    // Already migrated and nothing left to assign
+    if (tenantCount.n > 0 && unassignedLeads.n === 0) return;
+
+    // Nothing to migrate
+    if (unassignedLeads.n === 0) {
+      const settingsCount = await database.get('SELECT COUNT(*) as n FROM settings');
+      if (settingsCount.n === 0) return;
+    }
+
+    logger.info('[MIGRATION] Starting legacy data migration…');
+
+    // Step A — resolve env vars with safe fallbacks
+    const ownerEmail    = process.env.OWNER_EMAIL    || 'admin@localhost';
+    const ownerPassword = process.env.OWNER_PASSWORD || 'admin';
+    const ownerName     = process.env.OWNER_NAME     || 'Admin';
+    const orgName       = process.env.ORG_NAME       || 'Default Organisation';
+    const tenantSlug    = slugify(orgName) || 'default';
+
+    if (!process.env.OWNER_EMAIL) {
+      logger.warn('[MIGRATION] ⚠️  OWNER_EMAIL not set — using admin@localhost. Set this env var and restart to change.');
+    }
+    if (ownerPassword === 'admin') {
+      logger.warn('[MIGRATION] ⚠️  Default admin password in use — change it immediately in Settings after first login.');
+    }
+
+    // Step B — create tenant if not exists
+    let tenant = await database.get('SELECT id FROM tenants WHERE slug = ?', [tenantSlug]);
+    if (!tenant) {
+      const tenantId = randomUUID();
+      await database.run(
+        `INSERT INTO tenants (id, name, slug, plan, created_at) VALUES (?, ?, ?, 'free', CURRENT_TIMESTAMP)`,
+        [tenantId, orgName, tenantSlug],
+      );
+      tenant = { id: tenantId };
+      logger.info(`[MIGRATION] Tenant created: "${orgName}" (${tenantId})`);
+    }
+    const resolvedTenantId = tenant.id;
+
+    // Step C — create owner user if not exists
+    let user = await database.get(
+      'SELECT id FROM users WHERE tenant_id = ? AND email = ?',
+      [resolvedTenantId, ownerEmail],
+    );
+    if (!user) {
+      const passwordHash = await bcrypt.hash(ownerPassword, 12);
+      const userId = randomUUID();
+      await database.run(
+        `INSERT INTO users (id, tenant_id, email, password_hash, name, role, created_at)
+         VALUES (?, ?, ?, ?, ?, 'owner', CURRENT_TIMESTAMP)`,
+        [userId, resolvedTenantId, ownerEmail, passwordHash, ownerName],
+      );
+      logger.info(`[MIGRATION] Owner account created: ${ownerEmail} — CHANGE YOUR PASSWORD after first login`);
+    }
+
+    // Step D — copy settings into tenant_settings
+    const oldSettings = await database.all('SELECT key, value FROM settings');
+    for (const { key, value } of oldSettings) {
+      const exists = await database.get(
+        'SELECT 1 FROM tenant_settings WHERE tenant_id = ? AND key = ?',
+        [resolvedTenantId, key],
+      );
+      if (!exists) {
+        await database.run(
+          'INSERT INTO tenant_settings (tenant_id, key, value) VALUES (?, ?, ?)',
+          [resolvedTenantId, key, value],
+        );
+      }
+    }
+    // Seed any missing defaults
+    for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {
+      const exists = await database.get(
+        'SELECT 1 FROM tenant_settings WHERE tenant_id = ? AND key = ?',
+        [resolvedTenantId, key],
+      );
+      if (!exists) {
+        await database.run(
+          'INSERT INTO tenant_settings (tenant_id, key, value) VALUES (?, ?, ?)',
+          [resolvedTenantId, key, value],
+        );
+      }
+    }
+
+    // Step E — create default campaign
+    let campaign = await database.get(
+      `SELECT id FROM campaigns WHERE tenant_id = ? AND name = 'Default Campaign'`,
+      [resolvedTenantId],
+    );
+    if (!campaign) {
+      const findSetting = (k) => oldSettings.find(r => r.key === k)?.value;
+      const campaignId = randomUUID();
+      await database.run(
+        `INSERT INTO campaigns
+           (id, tenant_id, name, product_description, icp_description, scraper_targets,
+            scraping_interval, daily_lead_target, status, created_at, updated_at)
+         VALUES (?, ?, 'Default Campaign', ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+        [
+          campaignId,
+          resolvedTenantId,
+          findSetting('product_description') || '',
+          findSetting('icp_description')     || '',
+          findSetting('scraper_targets')     || '[]',
+          parseInt(findSetting('scraping_interval') || '30', 10),
+          parseInt(findSetting('daily_lead_target')  || '0',  10),
+        ],
+      );
+      campaign = { id: campaignId };
+      logger.info(`[MIGRATION] Default Campaign created (${campaignId})`);
+    }
+    const resolvedCampaignId = campaign.id;
+
+    // Step F — reassign orphaned leads
+    if (unassignedLeads.n > 0) {
+      await database.run(
+        'UPDATE leads SET tenant_id = ?, campaign_id = ? WHERE tenant_id IS NULL',
+        [resolvedTenantId, resolvedCampaignId],
+      );
+      logger.info(`[MIGRATION] ${unassignedLeads.n} leads assigned to Default Organisation / Default Campaign`);
+    }
+
+    // Step G — reassign orphaned pipeline_log rows
+    const unassignedLogs = await database.get('SELECT COUNT(*) as n FROM pipeline_log WHERE tenant_id IS NULL');
+    if (unassignedLogs.n > 0) {
+      await database.run(
+        'UPDATE pipeline_log SET tenant_id = ?, campaign_id = ? WHERE tenant_id IS NULL',
+        [resolvedTenantId, resolvedCampaignId],
+      );
+      logger.info(`[MIGRATION] ${unassignedLogs.n} pipeline_log rows assigned`);
+    }
+
+    logger.info(`[MIGRATION] ✅ Existing data migration complete (tenant=${resolvedTenantId}, campaign=${resolvedCampaignId})`);
+  } catch (err) {
+    logger.error({ err }, '[MIGRATION] ❌ Migration failed — server will continue but data may need manual recovery');
+  }
 }
