@@ -77,6 +77,101 @@ Output ONLY a valid JSON array of 12 query strings, no explanation, no markdown:
   }
 }
 
+// ── AI expansion: generate NEW queries based on enabled sources + campaign context ──────────────
+// Called each pipeline run. Takes existing (manual + previously AI-generated) queries as seeds
+// so it always produces fresh, non-overlapping batches.
+export async function expandQueriesFromSources(config = {}, sources = [], previousAiQueries = []) {
+  const endpoint = config.ollama_endpoint || 'http://localhost:11434';
+  const model    = config.ollama_model    || 'mistral';
+  const product  = (config.product_description || '').trim();
+  const icp      = (config.icp_description     || '').trim();
+
+  if (!product && !icp) return { github: [], google: [], gitlab: [] };
+
+  // Group sources by type and collect existing queries for each
+  const byType = {};
+  for (const s of sources) {
+    if (!byType[s.type]) byType[s.type] = [];
+    if (s.query) byType[s.type].push(s.query);
+  }
+  const prevByType = {};
+  for (const q of previousAiQueries) {
+    if (!prevByType[q.type]) prevByType[q.type] = [];
+    if (q.query) prevByType[q.type].push(q.query);
+  }
+
+  const result = { github: [], google: [], gitlab: [] };
+
+  async function expandForType(type, syntaxHint, formatHint) {
+    const existing = [...(byType[type] || []), ...(prevByType[type] || [])];
+    const avoidBlock = existing.length
+      ? `\nAlready used — DO NOT repeat these:\n${existing.map(q => `- "${q}"`).join('\n')}\n`
+      : '';
+
+    const prompt = `You are a B2B lead generation expert expanding a ${type} search campaign.
+
+Product: ${product}
+Ideal Customer Profile: ${icp}
+${avoidBlock}
+Generate 10 NEW diverse ${type} search queries that find DIFFERENT prospect segments not yet covered.
+${syntaxHint}
+
+Output ONLY a valid JSON array of 10 query strings, no explanation, no markdown:
+${formatHint}`;
+
+    try {
+      const res = await axios.post(`${endpoint}/api/generate`, {
+        model,
+        prompt,
+        stream: false,
+        options: { temperature: 0.95, num_predict: 600 },
+      }, { timeout: 30_000 });
+
+      const raw = (res.data?.response || '').trim();
+      const match = raw.match(/\[[\s\S]*?\]/);
+      if (!match) throw new Error('No JSON array in response');
+      const queries = JSON.parse(match[0]);
+      return queries.filter(q => typeof q === 'string' && q.length > 5).slice(0, 12);
+    } catch (err) {
+      logger.warn({ err: err.message }, `[QUERY-GEN] ${type} expansion failed`);
+      return [];
+    }
+  }
+
+  const tasks = [];
+
+  if (byType.github) {
+    tasks.push(expandForType(
+      'github',
+      'GitHub search syntax: combine role keywords (founder, CTO, engineer, freelance, indie) with location:"City", followers:>N, repos:>N',
+      '["CEO startup India followers:>10","..."]',
+    ).then(qs => { result.github = qs; }));
+  }
+
+  if (byType.google) {
+    tasks.push(expandForType(
+      'google',
+      'Every query MUST start with "site:linkedin.com/in". Target: founders, CTOs, VPs, heads of engineering, product managers. Mix industries, company stages, geographies.',
+      '["site:linkedin.com/in founder SaaS 2025","..."]',
+    ).then(qs => { result.google = qs; }));
+  }
+
+  if (byType.gitlab) {
+    tasks.push(expandForType(
+      'gitlab',
+      'GitLab search terms: role keywords, tech stack words, or partial names. Shorter is better.',
+      '["devops startup","backend engineer","..."]',
+    ).then(qs => { result.gitlab = qs; }));
+  }
+
+  await Promise.all(tasks);
+
+  const total = result.github.length + result.google.length + result.gitlab.length;
+  logger.info({ total, byType: Object.fromEntries(Object.entries(result).filter(([,v]) => v.length)) }, '[QUERY-GEN] Source-based expansion done');
+
+  return result;
+}
+
 export async function generateGoogleQueries(config = {}) {
   const endpoint = config.ollama_endpoint || 'http://localhost:11434';
   const model = config.ollama_model || 'mistral';
