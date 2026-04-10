@@ -9,13 +9,25 @@ import logger from '../utils/logger.js';
 const router = Router();
 // Mounted at /api/campaigns — requireAuth applied in index.js
 
+const sourceSchema = z.object({
+  type:  z.enum(['github', 'google', 'gitlab', 'hackernews', 'custom']),
+  query: z.string().max(500).optional().default(''),
+  url:   z.string().max(1000).optional().default(''),
+});
+
 const campaignSchema = z.object({
   name:                z.string().min(1).max(100),
   description:         z.string().max(500).optional().default(''),
   color:               z.string().regex(/^#[0-9A-Fa-f]{6}$/).optional().default('#1A73E8'),
   product_description: z.string().max(5000).optional().default(''),
   icp_description:     z.string().max(5000).optional().default(''),
-  scraper_targets:     z.string().optional().default('[]'),
+  // Accept either a JSON string or a pre-parsed array from the client
+  scraper_targets:     z.union([
+    z.array(sourceSchema),
+    z.string().transform((s) => {
+      try { return JSON.parse(s); } catch { return []; }
+    }),
+  ]).optional().default([]),
   scraping_interval:   z.coerce.number().int().min(0).optional().default(30),
   daily_lead_target:   z.coerce.number().int().min(0).optional().default(0),
 });
@@ -58,7 +70,7 @@ router.post('/', requireRole('owner', 'admin', 'member'), async (req, res) => {
           scraper_targets, scraping_interval, daily_lead_target, status, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
       [id, req.tenantId, name, description, color, product_description, icp_description,
-       scraper_targets, scraping_interval, daily_lead_target],
+       JSON.stringify(scraper_targets), scraping_interval, daily_lead_target],
     );
     const campaign = await db.get('SELECT * FROM campaigns WHERE id = ?', [id]);
     return res.status(201).json(campaign);
@@ -105,6 +117,10 @@ router.put('/:id', requireRole('owner', 'admin', 'member'), async (req, res) => 
     if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
 
     const fields = parse.data;
+    // Ensure scraper_targets is stored as a JSON string
+    if (fields.scraper_targets !== undefined && Array.isArray(fields.scraper_targets)) {
+      fields.scraper_targets = JSON.stringify(fields.scraper_targets);
+    }
     const sets = Object.keys(fields).map(k => `${k} = ?`).join(', ');
     const values = [...Object.values(fields), new Date().toISOString(), req.params.id];
 
