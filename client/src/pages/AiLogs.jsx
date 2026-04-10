@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Bot, Clock, AlertTriangle, CheckCircle2, Wrench,
-  RefreshCw, ChevronDown, ChevronUp,
+  RefreshCw, ChevronDown, ChevronUp, Trash2,
 } from 'lucide-react';
+import toast from 'react-hot-toast';
 import { formatDistanceToNow } from 'date-fns';
 import apiClient from '../api/client.js';
 
@@ -185,6 +186,16 @@ function EventCard({ event, idx }) {
 export default function AiLogs() {
   const [filter, setFilter] = useState('all');
   const [page, setPage]     = useState(1);
+  const queryClient = useQueryClient();
+
+  const clearMutation = useMutation({
+    mutationFn: () => apiClient.delete('/ai-logs'),
+    onSuccess: () => {
+      toast.success('AI logs cleared');
+      queryClient.invalidateQueries({ queryKey: ['ai-logs'] });
+    },
+    onError: () => toast.error('Failed to clear logs'),
+  });
 
   const { data, isLoading, isFetching, refetch } = useQuery({
     queryKey: ['ai-logs', filter, page],
@@ -210,10 +221,20 @@ export default function AiLogs() {
             Every call sent to Ollama · Mistral 7B
           </p>
         </div>
-        <button onClick={() => refetch()} className="btn-secondary flex items-center gap-2">
-          <RefreshCw className={`w-4 h-4 ${isFetching ? 'animate-spin' : ''}`} />
-          Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => { if (window.confirm('Clear all AI logs?')) clearMutation.mutate(); }}
+            disabled={clearMutation.isPending}
+            className="btn-secondary flex items-center gap-2 text-red-600 hover:text-red-700"
+          >
+            <Trash2 className="w-4 h-4" />
+            Clear logs
+          </button>
+          <button onClick={() => refetch()} className="btn-secondary flex items-center gap-2">
+            <RefreshCw className={`w-4 h-4 ${isFetching ? 'animate-spin' : ''}`} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* Stats */}

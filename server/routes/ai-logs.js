@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { createReadStream, existsSync } from 'fs';
+import { createReadStream, existsSync, truncateSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createInterface } from 'readline';
@@ -52,6 +52,16 @@ router.get('/', async (req, res, next) => {
       .map(({ full_prompt, full_response, ...e }) => e);
 
     res.json({ events, total, page, limit, stats });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /api/ai-logs — truncate the log file
+router.delete('/', async (req, res, next) => {
+  try {
+    if (existsSync(LOG_FILE)) truncateSync(LOG_FILE, 0);
+    res.json({ success: true, message: 'AI logs cleared' });
   } catch (err) {
     next(err);
   }
