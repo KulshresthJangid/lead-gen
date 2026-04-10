@@ -1,7 +1,6 @@
 import 'dotenv/config';
 import BetterSqlite3 from 'better-sqlite3';
 import pg from 'pg';
-import bcrypt from 'bcryptjs';
 import { mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -103,6 +102,7 @@ const MIGRATIONS = [
     product_description TEXT DEFAULT '',
     icp_description     TEXT DEFAULT '',
     scraper_targets     TEXT DEFAULT '[]',
+    ai_queries          TEXT DEFAULT '[]',
     scraping_interval   INTEGER DEFAULT 30,
     daily_lead_target   INTEGER DEFAULT 0,
     status              TEXT DEFAULT 'active'
@@ -290,6 +290,7 @@ export async function initDb() {
     { table: 'leads',        column: 'campaign_id',  ddl: 'ALTER TABLE leads ADD COLUMN campaign_id TEXT' },
     { table: 'pipeline_log', column: 'tenant_id',   ddl: 'ALTER TABLE pipeline_log ADD COLUMN tenant_id TEXT' },
     { table: 'pipeline_log', column: 'campaign_id',  ddl: 'ALTER TABLE pipeline_log ADD COLUMN campaign_id TEXT' },
+    { table: 'campaigns',    column: 'ai_queries',    ddl: "ALTER TABLE campaigns ADD COLUMN ai_queries TEXT DEFAULT '[]'" },
   ];
   for (const { table, column, ddl } of alterations) {
     const exists = await db.columnExists(table, column);
@@ -357,19 +358,9 @@ export async function migrateExistingData(database) {
 
     logger.info('[MIGRATION] Starting legacy data migration…');
 
-    // Step A — resolve env vars with safe fallbacks
-    const ownerEmail    = process.env.OWNER_EMAIL    || 'admin@localhost';
-    const ownerPassword = process.env.OWNER_PASSWORD || 'admin';
-    const ownerName     = process.env.OWNER_NAME     || 'Admin';
-    const orgName       = process.env.ORG_NAME       || 'Default Organisation';
-    const tenantSlug    = slugify(orgName) || 'default';
-
-    if (!process.env.OWNER_EMAIL) {
-      logger.warn('[MIGRATION] ⚠️  OWNER_EMAIL not set — using admin@localhost. Set this env var and restart to change.');
-    }
-    if (ownerPassword === 'admin') {
-      logger.warn('[MIGRATION] ⚠️  Default admin password in use — change it immediately in Settings after first login.');
-    }
+    // Step A — resolve tenant identity
+    const orgName    = process.env.ORG_NAME || 'Default Organisation';
+    const tenantSlug = slugify(orgName) || 'default';
 
     // Step B — create tenant if not exists
     let tenant = await database.get('SELECT id FROM tenants WHERE slug = ?', [tenantSlug]);
@@ -384,23 +375,7 @@ export async function migrateExistingData(database) {
     }
     const resolvedTenantId = tenant.id;
 
-    // Step C — create owner user if not exists
-    let user = await database.get(
-      'SELECT id FROM users WHERE tenant_id = ? AND email = ?',
-      [resolvedTenantId, ownerEmail],
-    );
-    if (!user) {
-      const passwordHash = await bcrypt.hash(ownerPassword, 12);
-      const userId = randomUUID();
-      await database.run(
-        `INSERT INTO users (id, tenant_id, email, password_hash, name, role, created_at)
-         VALUES (?, ?, ?, ?, ?, 'owner', CURRENT_TIMESTAMP)`,
-        [userId, resolvedTenantId, ownerEmail, passwordHash, ownerName],
-      );
-      logger.info(`[MIGRATION] Owner account created: ${ownerEmail} — CHANGE YOUR PASSWORD after first login`);
-    }
-
-    // Step D — copy settings into tenant_settings
+    // Step C — copy settings into tenant_settings
     const oldSettings = await database.all('SELECT key, value FROM settings');
     for (const { key, value } of oldSettings) {
       const exists = await database.get(
