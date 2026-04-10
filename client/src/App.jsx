@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, NavLink } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import {
-  LayoutDashboard, BarChart2, Settings, LogOut, Bot, Sun, Moon,
+  LayoutDashboard, BarChart2, Settings, LogOut, Bot, Sun, Moon, Layers, Users,
 } from 'lucide-react';
 import Dashboard from './pages/Dashboard.jsx';
 import Analytics from './pages/Analytics.jsx';
@@ -10,22 +10,32 @@ import LeadDetail from './pages/LeadDetail.jsx';
 import SettingsPage from './pages/Settings.jsx';
 import AiLogs from './pages/AiLogs.jsx';
 import Login from './pages/Login.jsx';
+import Register from './pages/Register.jsx';
+import Campaigns from './pages/Campaigns.jsx';
+import TeamSettings from './pages/TeamSettings.jsx';
 import SetupWizard from './components/SetupWizard.jsx';
 import PipelineStatusBar from './components/PipelineStatusBar.jsx';
+import CampaignSwitcher from './components/CampaignSwitcher.jsx';
+import CampaignFormModal from './components/CampaignFormModal.jsx';
 import apiClient from './api/client.js';
 import { useAuth } from './context/AuthContext.jsx';
 import { ThemeProvider, useTheme } from './context/ThemeContext.jsx';
+import { CampaignProvider, useCampaign } from './context/CampaignContext.jsx';
 
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 function Sidebar() {
-  const { logout } = useAuth();
+  const { logout, user } = useAuth();
   const { theme, toggle } = useTheme();
+  const { refetch } = useCampaign();
+  const [showNewCampaign, setShowNewCampaign] = useState(false);
 
   const navItems = [
     { to: '/', icon: LayoutDashboard, label: 'Dashboard', end: true },
+    { to: '/campaigns', icon: Layers, label: 'Campaigns' },
     { to: '/analytics', icon: BarChart2, label: 'Analytics' },
     { to: '/ai-logs', icon: Bot, label: 'AI Logs' },
     { to: '/settings', icon: Settings, label: 'Settings' },
+    { to: '/team', icon: Users, label: 'Team' },
   ];
 
   return (
@@ -46,9 +56,16 @@ function Sidebar() {
             LeadGen Pro
           </span>
         </div>
-        <p className="text-[11px] mt-1 pl-9" style={{ color: 'var(--text-3)' }}>
-          B2B pipeline
-        </p>
+        {user?.tenantName && (
+          <p className="text-[11px] mt-1 pl-9 truncate" style={{ color: 'var(--text-3)' }}>
+            {user.tenantName}
+          </p>
+        )}
+      </div>
+
+      {/* Campaign switcher */}
+      <div className="pt-3">
+        <CampaignSwitcher onNewCampaign={() => setShowNewCampaign(true)} />
       </div>
 
       {/* Nav */}
@@ -100,6 +117,14 @@ function Sidebar() {
           <LogOut className="w-3.5 h-3.5" />
         </button>
       </div>
+
+      {showNewCampaign && (
+        <CampaignFormModal
+          campaign={null}
+          onClose={() => setShowNewCampaign(false)}
+          onSaved={refetch}
+        />
+      )}
     </aside>
   );
 }
@@ -171,10 +196,13 @@ function AppRoutes() {
             </ProtectedRoute>
           }
         />
-        <Route path="/analytics" element={<ProtectedRoute><Layout><Analytics /></Layout></ProtectedRoute>} />
-        <Route path="/leads/:id"  element={<ProtectedRoute><Layout><LeadDetail /></Layout></ProtectedRoute>} />
-        <Route path="/ai-logs"    element={<ProtectedRoute><Layout><AiLogs /></Layout></ProtectedRoute>} />
-        <Route path="/settings"   element={<ProtectedRoute><Layout><SettingsPage /></Layout></ProtectedRoute>} />
+        <Route path="/analytics"  element={<ProtectedRoute><Layout><Analytics /></Layout></ProtectedRoute>} />
+        <Route path="/leads/:id"   element={<ProtectedRoute><Layout><LeadDetail /></Layout></ProtectedRoute>} />
+        <Route path="/ai-logs"     element={<ProtectedRoute><Layout><AiLogs /></Layout></ProtectedRoute>} />
+        <Route path="/settings"    element={<ProtectedRoute><Layout><SettingsPage /></Layout></ProtectedRoute>} />
+        <Route path="/campaigns"   element={<ProtectedRoute><Layout><Campaigns /></Layout></ProtectedRoute>} />
+        <Route path="/team"        element={<ProtectedRoute><Layout><TeamSettings /></Layout></ProtectedRoute>} />
+        <Route path="/register"    element={authenticated ? <Navigate to="/" replace /> : <Register />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
       <Toaster
@@ -197,7 +225,9 @@ function AppRoutes() {
 export default function App() {
   return (
     <ThemeProvider>
-      <AppRoutes />
+      <CampaignProvider>
+        <AppRoutes />
+      </CampaignProvider>
     </ThemeProvider>
   );
 }
