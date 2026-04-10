@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Zap } from 'lucide-react';
 import toast from 'react-hot-toast';
 import apiClient from '../api/client.js';
@@ -6,7 +7,7 @@ import { useAuth } from '../context/AuthContext.jsx';
 
 export default function Login() {
   const { login } = useAuth();
-  const [form, setForm] = useState({ username: '', password: '' });
+  const [form, setForm] = useState({ email: '', password: '' });
   const [loading, setLoading] = useState(false);
 
   async function handleSubmit(e) {
@@ -14,7 +15,7 @@ export default function Login() {
     setLoading(true);
     try {
       const { data } = await apiClient.post('/auth/login', form);
-      login(data.token);
+      login(data.token, data.user);
     } catch (err) {
       const msg = err.response?.data?.error || 'Login failed';
       toast.error(msg);
@@ -44,17 +45,17 @@ export default function Login() {
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <label className="block text-xs font-medium text-gray-400 mb-1.5">
-                Username
+                Email
               </label>
               <input
-                type="text"
-                autoComplete="username"
+                type="email"
+                autoComplete="email"
                 autoFocus
                 required
-                value={form.username}
-                onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))}
+                value={form.email}
+                onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
                 className="w-full bg-gray-800 border border-gray-700 text-white rounded-lg px-3.5 py-2.5 text-sm placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
-                placeholder="admin"
+                placeholder="you@company.com"
               />
             </div>
 
@@ -81,6 +82,13 @@ export default function Login() {
               {loading ? 'Signing in…' : 'Sign in'}
             </button>
           </form>
+
+          <p className="mt-4 text-center text-xs text-gray-500">
+            Don't have an account?{' '}
+            <Link to="/register" className="text-indigo-400 hover:text-indigo-300 transition-colors">
+              Create one
+            </Link>
+          </p>
         </div>
       </div>
     </div>
