@@ -1,8 +1,9 @@
 import { Router } from 'express';
 import axios from 'axios';
 import { getDb } from '../db.js';
-import { getState, triggerNow } from '../workers/scheduler.js';
+import { getState } from '../workers/scheduler.js';
 import { readConfig } from '../utils/config.js';
+import { publishJob } from '../utils/rabbitmq.js';
 
 const router = Router();
 
@@ -10,23 +11,23 @@ const router = Router();
 router.get('/status', async (req, res, next) => {
   try {
     const db = getDb();
-    const config = readConfig();
+    const config = await readConfig(req.tenantId);
+    const campaignId = req.query.campaignId || null;
 
-    const state = getState();
-    const history = await db.all(
-      `SELECT * FROM pipeline_log ORDER BY started_at DESC LIMIT 10`,
-    );
+    const state = getState(req.tenantId, campaignId);
+    const historyParams = campaignId
+      ? [req.tenantId, campaignId]
+      : [req.tenantId];
+    const historySql = campaignId
+      ? `SELECT * FROM pipeline_log WHERE tenant_id = ? AND campaign_id = ? ORDER BY started_at DESC LIMIT 10`
+      : `SELECT * FROM pipeline_log WHERE tenant_id = ? ORDER BY started_at DESC LIMIT 10`;
+    const history = await db.all(historySql, historyParams);
 
-    // Check if Ollama is reachable
     let ollamaOnline = false;
     try {
-      await axios.get(`${config.ollama_endpoint || 'http://localhost:11434'}/api/tags`, {
-        timeout: 3000,
-      });
+      await axios.get(`${config.ollama_endpoint || 'http://localhost:11434'}/api/tags`, { timeout: 3000 });
       ollamaOnline = true;
-    } catch {
-      ollamaOnline = false;
-    }
+    } catch { ollamaOnline = false; }
 
     const lastRun = history[0] || null;
 
@@ -61,6 +62,7 @@ router.get('/status', async (req, res, next) => {
         dupes: r.dupes_skipped,
         errors: r.error_count,
         triggeredBy: r.triggered_by,
+        campaignId: r.campaign_id,
       })),
     });
   } catch (err) {
@@ -69,14 +71,28 @@ router.get('/status', async (req, res, next) => {
 });
 
 // ── POST /api/pipeline/trigger ────────────────────────────────────────────────
+// Deprecated — prefer POST /api/campaigns/:id/trigger
+// Kept for backward compat; uses first active campaign if no campaignId given
 router.post('/trigger', async (req, res, next) => {
   try {
-    const result = await triggerNow();
-    if (result?.conflict) {
-      return res.status(409).json({ error: 'Pipeline is already running' });
+    const db = getDb();
+    let { campaignId } = req.body || {};
+
+    if (!campaignId) {
+      const campaign = await db.get(
+        `SELECT id FROM campaigns WHERE tenant_id = ? AND status = 'active' ORDER BY created_at ASC LIMIT 1`,
+        [req.tenantId],
+      );
+      if (!campaign) return res.status(404).json({ error: 'No active campaign found' });
+      campaignId = campaign.id;
     }
-    const runId = result?.runId || 'pending';
-    res.json({ runId, message: 'Pipeline started' });
+
+    await publishJob(`pipeline.${req.tenantId}.${campaignId}`, {
+      tenantId: req.tenantId,
+      campaignId,
+      triggeredBy: 'manual',
+    });
+    res.json({ queued: true, message: 'Pipeline job queued', campaignId });
   } catch (err) {
     next(err);
   }
