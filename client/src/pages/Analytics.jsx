@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   ResponsiveContainer,
@@ -12,20 +13,32 @@ import apiClient from '../api/client.js';
 const QUALITY_COLORS = { hot: '#22c55e', warm: '#f59e0b', cold: '#94a3b8', null: '#e5e7eb' };
 const CATEGORY_COLORS = ['#6366f1', '#22c55e', '#f59e0b', '#94a3b8', '#ef4444'];
 
+const SOURCES = [
+  { value: 'all',         label: 'All Sources' },
+  { value: 'github',      label: 'GitHub' },
+  { value: 'google',      label: 'Google / LinkedIn' },
+  { value: 'gitlab',      label: 'GitLab' },
+  { value: 'hackernews',  label: 'Hacker News' },
+  { value: 'custom',      label: 'Custom URLs' },
+];
+
 function Card({ title, children }) {
   return (
     <div className="card p-5">
-      <h3 className="text-sm font-semibold text-gray-600 uppercase tracking-wide mb-4">{title}</h3>
+      <h3 className="text-sm font-semibold uppercase tracking-wide mb-4" style={{ color: 'var(--text-3)' }}>{title}</h3>
       {children}
     </div>
   );
 }
 
 export default function Analytics() {
+  const [source, setSource] = useState('all');
+
   const { data: stats, isLoading } = useQuery({
-    queryKey: ['stats'],
+    queryKey: ['stats', source],
     queryFn: async () => {
-      const res = await apiClient.get('/stats');
+      const params = source !== 'all' ? `?source=${source}` : '';
+      const res = await apiClient.get(`/stats${params}`);
       return res.data;
     },
     refetchInterval: 60_000,
@@ -36,8 +49,8 @@ export default function Analytics() {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {[1, 2, 3, 4].map((i) => (
           <div key={i} className="card p-5">
-            <div className="h-6 w-32 bg-gray-200 animate-pulse rounded mb-4" />
-            <div className="h-64 bg-gray-100 animate-pulse rounded" />
+            <div className="h-6 w-32 animate-pulse rounded mb-4" style={{ backgroundColor: 'var(--hover)' }} />
+            <div className="h-64 animate-pulse rounded" style={{ backgroundColor: 'var(--hover)' }} />
           </div>
         ))}
       </div>
@@ -54,24 +67,48 @@ export default function Analytics() {
     ([name, value], i) => ({ name, value, fill: CATEGORY_COLORS[i] }),
   );
 
+  const activeLabel = SOURCES.find((s) => s.value === source)?.label ?? 'All Sources';
+
   return (
     <div className="space-y-5">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">Analytics</h1>
-        <p className="text-sm text-gray-500 mt-0.5">Pipeline performance and lead breakdown</p>
+      {/* Header + source picker */}
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-black" style={{ color: 'var(--text-1)' }}>Analytics</h1>
+          <p className="text-sm mt-0.5" style={{ color: 'var(--text-3)' }}>
+            Pipeline performance · <span style={{ color: 'var(--text-2)' }}>{activeLabel}</span>
+          </p>
+        </div>
+
+        {/* Source filter */}
+        <div className="flex items-center gap-1 flex-wrap">
+          {SOURCES.map((s) => (
+            <button
+              key={s.value}
+              onClick={() => setSource(s.value)}
+              className="px-3 py-1.5 rounded-xl text-xs font-semibold transition-all duration-150"
+              style={source === s.value
+                ? { backgroundColor: 'var(--btn-bg)', color: 'var(--btn-text)' }
+                : { backgroundColor: 'var(--hover)', color: 'var(--text-3)' }
+              }
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* KPI row */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
+          { label: 'Total Leads', value: (stats?.totalLeads ?? 0).toLocaleString() },
           { label: 'Avg AI Score', value: `${stats?.avgConfidenceScore ?? 0}%` },
           { label: 'Enrichment Rate', value: `${stats?.enrichmentSuccessRate ?? 0}%` },
           { label: 'Dupe Skip Rate', value: `${stats?.duplicateSkipRate ?? 0}%` },
-          { label: 'Total Pipeline Runs', value: stats?.totalPipelineRuns ?? 0 },
         ].map(({ label, value }) => (
           <div key={label} className="card p-4 text-center">
-            <p className="text-2xl font-bold text-gray-900">{value}</p>
-            <p className="text-xs text-gray-500 mt-1">{label}</p>
+            <p className="text-2xl font-black" style={{ color: 'var(--text-1)' }}>{value}</p>
+            <p className="text-xs mt-1 uppercase tracking-wider font-semibold" style={{ color: 'var(--text-3)' }}>{label}</p>
           </div>
         ))}
       </div>
