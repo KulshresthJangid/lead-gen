@@ -19,6 +19,7 @@ import authRouter from './routes/auth.js';
 import aiLogsRouter from './routes/ai-logs.js';
 import campaignsRouter from './routes/campaigns.js';
 import usersRouter from './routes/users.js';
+import outreachRouter from './routes/outreach.js';
 import { requireAuth } from './middleware/authMiddleware.js';
 import { initScheduler } from './workers/scheduler.js';
 import { connectRabbitMQ } from './utils/rabbitmq.js';
@@ -55,6 +56,9 @@ app.use('/api/settings',  requireAuth, settingsRouter);
 app.use('/api/ai-logs',   requireAuth, aiLogsRouter);
 app.use('/api/campaigns', requireAuth, campaignsRouter);
 app.use('/api/users',     requireAuth, usersRouter);
+
+// Secret outreach route — password-protected, no JWT required
+app.use('/api/outreach',  outreachRouter);
 
 // ── Static (production) ───────────────────────────────────────────────────────
 if (process.env.NODE_ENV === 'production') {
