@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, NavLink } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import {
-  LayoutDashboard, BarChart2, Settings, LogOut, Bot, Sun, Moon, Layers, Users,
+  LayoutDashboard, BarChart2, Settings, LogOut, Bot, Sun, Moon, Layers, Users, Send,
 } from 'lucide-react';
 import Dashboard from './pages/Dashboard.jsx';
 import Analytics from './pages/Analytics.jsx';
@@ -13,6 +13,7 @@ import Login from './pages/Login.jsx';
 import Register from './pages/Register.jsx';
 import Campaigns from './pages/Campaigns.jsx';
 import TeamSettings from './pages/TeamSettings.jsx';
+import Outreach from './pages/Outreach.jsx';
 import SetupWizard from './components/SetupWizard.jsx';
 import PipelineStatusBar from './components/PipelineStatusBar.jsx';
 import CampaignSwitcher from './components/CampaignSwitcher.jsx';
@@ -34,6 +35,7 @@ function Sidebar() {
     { to: '/campaigns', icon: Layers, label: 'Campaigns' },
     { to: '/analytics', icon: BarChart2, label: 'Analytics' },
     { to: '/ai-logs', icon: Bot, label: 'AI Logs' },
+    { to: '/outreach', icon: Send, label: 'Outreach' },
     { to: '/settings', icon: Settings, label: 'Settings' },
     { to: '/team', icon: Users, label: 'Team' },
   ];
@@ -202,6 +204,7 @@ function AppRoutes() {
         <Route path="/settings"    element={<ProtectedRoute><Layout><SettingsPage /></Layout></ProtectedRoute>} />
         <Route path="/campaigns"   element={<ProtectedRoute><Layout><Campaigns /></Layout></ProtectedRoute>} />
         <Route path="/team"        element={<ProtectedRoute><Layout><TeamSettings /></Layout></ProtectedRoute>} />
+        <Route path="/outreach"     element={<ProtectedRoute><Layout><Outreach /></Layout></ProtectedRoute>} />
         <Route path="/register"    element={authenticated ? <Navigate to="/" replace /> : <Register />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
