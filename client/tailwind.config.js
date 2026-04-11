@@ -11,8 +11,8 @@ export default {
         cold:   'var(--cold)',
       },
       fontFamily: {
-        display: ['Syne', 'system-ui', 'sans-serif'],
-        mono:    ['"Space Mono"', 'monospace'],
+        display: ['Inter', 'system-ui', 'sans-serif'],
+        mono:    ['"JetBrains Mono"', '"Fira Code"', 'monospace'],
       },
       animation: {
         'fade-out':   'fadeOut 5s ease-in-out forwards',
