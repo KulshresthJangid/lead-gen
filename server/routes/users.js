@@ -295,8 +295,6 @@ router.delete('/:id', requireRole('owner', 'admin'), async (req, res) => {
   }
 });
 
-export default router;
-
 
 // GET /api/users — list all users in tenant
 router.get('/', requireRole('owner', 'admin'), async (req, res) => {
