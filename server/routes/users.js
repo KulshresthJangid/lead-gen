@@ -315,13 +315,13 @@ router.get('/', requireRole('owner', 'admin'), async (req, res) => {
 });
 
 // POST /api/users/invite
-const inviteSchema = z.object({
+const inviteEmailSchema = z.object({
   email: z.string().email(),
   role:  z.enum(['admin', 'member', 'viewer']),
 });
 
 router.post('/invite', requireRole('owner', 'admin'), async (req, res) => {
-  const parse = inviteSchema.safeParse(req.body);
+  const parse = inviteEmailSchema.safeParse(req.body);
   if (!parse.success) return res.status(400).json({ error: parse.error.issues });
 
   const { email, role } = parse.data;
