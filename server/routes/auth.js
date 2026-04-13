@@ -135,14 +135,48 @@ router.post('/login', async (req, res) => {
 });
 
 // POST /api/auth/verify
-router.post('/verify', (req, res) => {
+router.post('/verify', async (req, res) => {
   const authHeader = req.headers.authorization || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
   if (!token) return res.status(401).json({ valid: false });
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    return res.json({ valid: true, user: { id: decoded.sub, role: decoded.role, tenantId: decoded.tenantId } });
+    const db = getDb();
+
+    // Fetch full user + screen-level permissions
+    const user = await db.get(
+      `SELECT u.id, u.name, u.email, u.role, u.is_active, u.department_id,
+              t.name AS tenantName
+       FROM users u
+       JOIN tenants t ON t.id = u.tenant_id
+       WHERE u.id = ? AND u.tenant_id = ?`,
+      [decoded.sub, decoded.tenantId],
+    );
+
+    if (!user || !user.is_active) {
+      return res.status(401).json({ valid: false });
+    }
+
+    const permRows = await db.all(
+      'SELECT screen, granted FROM user_permissions WHERE user_id = ?',
+      [decoded.sub],
+    );
+    const screenPermissions = Object.fromEntries(permRows.map(r => [r.screen, !!r.granted]));
+
+    return res.json({
+      valid: true,
+      user: {
+        id:               user.id,
+        name:             user.name,
+        email:            user.email,
+        role:             user.role,
+        tenantId:         decoded.tenantId,
+        tenantName:       user.tenantName,
+        department_id:    user.department_id,
+        screenPermissions,
+      },
+    });
   } catch {
     return res.status(401).json({ valid: false });
   }

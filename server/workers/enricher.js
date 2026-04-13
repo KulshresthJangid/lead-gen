@@ -1,13 +1,9 @@
-import axios from 'axios';
 import logger from '../utils/logger.js';
 import { logAiEvent } from '../utils/aiLogger.js';
+import { callAI, checkConnectivity } from '../utils/aiClient.js';
 
 // One lead per batch: simplest way to prevent output truncation.
-// Per-lead prompts are short enough that Mistral never hits the token cap.
 const BATCH_SIZE = 1;
-
-// -1 = no token limit. Local Ollama can run as long as needed.
-const NUM_PREDICT = -1;
 
 function buildSystemPrompt(config = {}) {
   const product = config.product_description
@@ -85,45 +81,32 @@ function repairTruncatedJson(raw) {
 }
 
 /**
- * Call Ollama and return the raw response text, done_reason, and duration.
- * Sets num_predict so we can detect truncation via done_reason === 'length'.
+ * Thin wrapper: call the configured AI provider and return { raw, done_reason, duration_ms }
+ * so the parseWithRetry logic below stays unchanged.
  */
-async function callOllama(endpoint, model, prompt) {
-  const t0 = Date.now();
-  const response = await axios.post(
-    `${endpoint}/api/generate`,
-    {
-      model,
-      prompt,
-      stream: false,
-      options: {
-        num_predict: NUM_PREDICT,
-        num_ctx: 100000,    // full Mistral 7B context window — prevents mid-response truncation
-        temperature: 0.1, // low temperature → more deterministic JSON output
-      },
-    },
-    { timeout: 0 }, // no timeout — Mistral on CPU takes several minutes per batch
-  );
-  return {
-    raw: response.data.response || '',
-    done_reason: response.data.done_reason || 'stop',
-    duration_ms: Date.now() - t0,
-  };
+async function callProvider(config, prompt) {
+  const { text, done_reason, duration_ms } = await callAI(prompt, config, {
+    temperature: 0.1,  // deterministic JSON output
+    // No maxTokens — let the provider use its default max so JSON isn't truncated
+  });
+  return { raw: text, done_reason, duration_ms };
 }
 
 /**
- * Call Ollama, parse JSON, detect/repair truncation, retry once on failure.
+ * Call the AI provider, parse JSON, detect/repair truncation, retry once on failure.
  * Logs every attempt to ai-events.jsonl via aiLogger.
  */
-async function parseWithRetry(endpoint, model, prompt, context = 'batch', leadIds = [], { runId = null, campaignId = null, orgId = null } = {}) {
-  const logBase = { model, context, lead_ids: leadIds, run_id: runId, campaign_id: campaignId, org_id: orgId };
+async function parseWithRetry(config, prompt, context = 'batch', leadIds = [], { runId = null, campaignId = null, orgId = null } = {}) {
+  const model = config.ai_model || config.ollama_model || 'unknown';
+  const provider = config.ai_provider || 'ollama';
+  const logBase = { model, provider, context, lead_ids: leadIds, run_id: runId, campaign_id: campaignId, org_id: orgId };
   let raw = '';
   let done_reason = 'stop';
   let duration_ms = 0;
 
   // ── Attempt 1 ──────────────────────────────────────────────────────────────
   try {
-    ({ raw, done_reason, duration_ms } = await callOllama(endpoint, model, prompt));
+    ({ raw, done_reason, duration_ms } = await callProvider(config, prompt));
   } catch (err) {
     logAiEvent({ ...logBase, attempt: 1, error: err.message, parsed_ok: false, duration_ms });
     throw err;
@@ -172,7 +155,7 @@ async function parseWithRetry(endpoint, model, prompt, context = 'batch', leadId
   let raw2 = '', done_reason2 = 'stop', duration_ms2 = 0;
   try {
     ({ raw: raw2, done_reason: done_reason2, duration_ms: duration_ms2 } =
-      await callOllama(endpoint, model, retryPrompt));
+      await callProvider(config, retryPrompt));
   } catch (err) {
     logAiEvent({ ...logBase, attempt: 2, error: err.message, parsed_ok: false, duration_ms: duration_ms2 });
     return null;
@@ -218,16 +201,13 @@ async function parseWithRetry(endpoint, model, prompt, context = 'batch', leadId
 export async function enrichBatch(leads, config = {}, io = null, { runId = null, campaignId = null, orgId = null } = {}) {
   if (!leads.length) return leads;
 
-  const endpoint = config.ollama_endpoint || 'http://localhost:11434';
-  const model = config.ollama_model || 'mistral';
   const systemPrompt = buildSystemPrompt(config);
   const enriched = [...leads];
 
-  // Check if Ollama is reachable
-  try {
-    await axios.get(`${endpoint}/api/tags`, { timeout: 5000 });
-  } catch {
-    logger.warn('Ollama unreachable — skipping enrichment');
+  // Check if the configured AI provider is reachable
+  const { ok, provider } = await checkConnectivity(config);
+  if (!ok) {
+    logger.warn({ provider }, 'AI provider unreachable — skipping enrichment');
     io?.emit('ollama_offline', { timestamp: new Date().toISOString() });
     return leads;
   }
@@ -242,7 +222,7 @@ export async function enrichBatch(leads, config = {}, io = null, { runId = null,
   for (const chunk of chunks) {
     const chunkIds = chunk.map((l) => l.email);
     const prompt = `${systemPrompt}\n\nLeads to enrich:\n${JSON.stringify(chunk)}`;
-    let result = await parseWithRetry(endpoint, model, prompt, 'enrichBatch', chunkIds, { runId, campaignId, orgId });
+    let result = await parseWithRetry(config, prompt, 'enrichBatch', chunkIds, { runId, campaignId, orgId });
 
     // If the batch failed entirely, fall back to one lead at a time
     if (!result?.leads || !Array.isArray(result.leads) || result.leads.length === 0) {
@@ -251,7 +231,7 @@ export async function enrichBatch(leads, config = {}, io = null, { runId = null,
       for (const singleLead of chunk) {
         const singlePrompt = `${systemPrompt}\n\nLeads to enrich:\n${JSON.stringify([singleLead])}`;
         const singleResult = await parseWithRetry(
-          endpoint, model, singlePrompt, `enrichBatch:single:${singleLead.email}`, [singleLead.email], { runId, campaignId, orgId },
+          config, singlePrompt, `enrichBatch:single:${singleLead.email}`, [singleLead.email], { runId, campaignId, orgId },
         );
         if (singleResult?.leads?.length) {
           result.leads.push(...singleResult.leads);
@@ -286,8 +266,6 @@ export async function enrichBatch(leads, config = {}, io = null, { runId = null,
 export async function refineOutreach(leads, config = {}, { runId = null, campaignId = null, orgId = null } = {}) {
   if (!leads.length) return leads;
 
-  const endpoint = config.ollama_endpoint || 'http://localhost:11434';
-  const model = config.ollama_model || 'mistral';
   const refined = [...leads];
 
   for (let i = 0; i < leads.length; i++) {
@@ -307,7 +285,7 @@ Rules:
 Lead:
 ${JSON.stringify(lead)}`;
 
-    const result = await parseWithRetry(endpoint, model, prompt, `refineOutreach`, [lead.email], { runId, campaignId, orgId });
+    const result = await parseWithRetry(config, prompt, `refineOutreach`, [lead.email], { runId, campaignId, orgId });
     if (result && result.reason_for_outreach) {
       refined[i] = { ...refined[i], reason_for_outreach: result.reason_for_outreach };
     }

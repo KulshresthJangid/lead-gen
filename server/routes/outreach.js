@@ -18,9 +18,9 @@
 import { Router } from 'express';
 import multer from 'multer';
 import nodemailer from 'nodemailer';
-import axios from 'axios';
 import { getDb } from '../db.js';
 import { readConfig } from '../utils/config.js';
+import { callAI } from '../utils/aiClient.js';
 import logger from '../utils/logger.js';
 
 const router = Router();
@@ -78,17 +78,8 @@ RULES:
 
 Output only the email body text.`;
 
-  const endpoint = (config.ollama_endpoint || 'http://localhost:11434').replace(/\/$/, '');
-  const model    = config.ollama_model || 'mistral';
-
-  const res = await axios.post(`${endpoint}/api/generate`, {
-    model,
-    prompt,
-    stream: false,
-    options: { temperature: 0.7, num_predict: 600 },
-  }, { timeout: 60_000 });
-
-  return (res.data?.response || '').trim();
+  const { text } = await callAI(prompt, config, { temperature: 0.7, maxTokens: 600, timeout: 60_000 });
+  return text;
 }
 
 // ── POST /api/outreach/send ───────────────────────────────────────────────────
@@ -118,7 +109,7 @@ router.post('/send', upload.array('attachments'), async (req, res) => {
     resolvedTenantId = firstTenant.id;
   }
 
-  // ── Load Ollama config for this tenant ────────────────────────────────────
+  // ── Load AI config for this tenant ────────────────────────────────────────
   const config = await readConfig(resolvedTenantId);
 
   // ── Fetch matching leads that have an email ────────────────────────────────

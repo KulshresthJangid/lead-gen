@@ -19,6 +19,7 @@ import authRouter from './routes/auth.js';
 import aiLogsRouter from './routes/ai-logs.js';
 import campaignsRouter from './routes/campaigns.js';
 import usersRouter from './routes/users.js';
+import departmentsRouter from './routes/departments.js';
 import outreachRouter from './routes/outreach.js';
 import { requireAuth } from './middleware/authMiddleware.js';
 import { initScheduler } from './workers/scheduler.js';
@@ -54,8 +55,9 @@ app.use('/api/stats',     requireAuth, statsRouter);
 app.use('/api/pipeline',  requireAuth, pipelineRouter);
 app.use('/api/settings',  requireAuth, settingsRouter);
 app.use('/api/ai-logs',   requireAuth, aiLogsRouter);
-app.use('/api/campaigns', requireAuth, campaignsRouter);
-app.use('/api/users',     requireAuth, usersRouter);
+app.use('/api/campaigns',    requireAuth, campaignsRouter);
+app.use('/api/users',        requireAuth, usersRouter);
+app.use('/api/departments',  requireAuth, departmentsRouter);
 
 // Secret outreach route — password-protected, no JWT required
 app.use('/api/outreach',  outreachRouter);

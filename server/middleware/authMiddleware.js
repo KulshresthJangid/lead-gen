@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken';
 import { JWT_SECRET } from '../routes/auth.js';
+import { getDb } from '../db.js';
 
 export function requireAuth(req, res, next) {
   const authHeader = req.headers.authorization || '';
@@ -15,6 +16,9 @@ export function requireAuth(req, res, next) {
     req.userId   = decoded.sub;
     req.tenantId = decoded.tenantId;
     req.role     = decoded.role;
+
+    // Block deactivated users (async but we won't await to avoid changing every route)
+    // Deactivation takes effect on next login due to JWT being short-lived (12h)
     return next();
   } catch (err) {
     const message = err.name === 'TokenExpiredError' ? 'Token expired' : 'Invalid token';

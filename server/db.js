@@ -121,11 +121,43 @@ const MIGRATIONS = [
     value     TEXT NOT NULL,
     PRIMARY KEY (tenant_id, key)
   )`,
+  // Departments — logical groups within a tenant (e.g. "Sales", "Marketing")
+  `CREATE TABLE IF NOT EXISTS departments (
+    id         TEXT PRIMARY KEY,
+    tenant_id  TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    name       TEXT NOT NULL,
+    color      TEXT DEFAULT '#6366F1',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(tenant_id, name)
+  )`,
+  // Campaign members — per-campaign access control (owner/admin bypass this)
+  `CREATE TABLE IF NOT EXISTS campaign_members (
+    campaign_id TEXT NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+    user_id     TEXT NOT NULL REFERENCES users(id)     ON DELETE CASCADE,
+    access      TEXT NOT NULL DEFAULT 'viewer'
+                  CHECK(access IN ('viewer','editor','manager')),
+    granted_by  TEXT,
+    granted_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (campaign_id, user_id)
+  )`,
+  // Screen-level permission overrides per user (optional fine-grained control)
+  `CREATE TABLE IF NOT EXISTS user_permissions (
+    id          TEXT PRIMARY KEY,
+    tenant_id   TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    user_id     TEXT NOT NULL REFERENCES users(id)   ON DELETE CASCADE,
+    screen      TEXT NOT NULL,
+    granted     INTEGER NOT NULL DEFAULT 1,
+    UNIQUE(user_id, screen)
+  )`,
 ];
 
 const DEFAULT_SETTINGS = {
   ollama_endpoint: 'http://localhost:11434',
   ollama_model: 'mistral',
+  ai_provider: 'ollama',
+  ai_api_key: '',
+  ai_model: '',
+  ai_base_url: '',
   scraping_interval: '30',
   is_setup_complete: 'false',
   product_description: '',
@@ -293,11 +325,13 @@ export async function initDb() {
 
   // ALTER TABLE: add new columns if they don't exist yet
   const alterations = [
-    { table: 'leads',        column: 'tenant_id',   ddl: 'ALTER TABLE leads ADD COLUMN tenant_id TEXT' },
+    { table: 'leads',        column: 'tenant_id',    ddl: 'ALTER TABLE leads ADD COLUMN tenant_id TEXT' },
     { table: 'leads',        column: 'campaign_id',  ddl: 'ALTER TABLE leads ADD COLUMN campaign_id TEXT' },
-    { table: 'pipeline_log', column: 'tenant_id',   ddl: 'ALTER TABLE pipeline_log ADD COLUMN tenant_id TEXT' },
+    { table: 'pipeline_log', column: 'tenant_id',    ddl: 'ALTER TABLE pipeline_log ADD COLUMN tenant_id TEXT' },
     { table: 'pipeline_log', column: 'campaign_id',  ddl: 'ALTER TABLE pipeline_log ADD COLUMN campaign_id TEXT' },
-    { table: 'campaigns',    column: 'ai_queries',    ddl: "ALTER TABLE campaigns ADD COLUMN ai_queries TEXT DEFAULT '[]'" },
+    { table: 'campaigns',    column: 'ai_queries',   ddl: "ALTER TABLE campaigns ADD COLUMN ai_queries TEXT DEFAULT '[]'" },
+    { table: 'users',        column: 'department_id', ddl: 'ALTER TABLE users ADD COLUMN department_id TEXT REFERENCES departments(id) ON DELETE SET NULL' },
+    { table: 'users',        column: 'is_active',    ddl: "ALTER TABLE users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1" },
   ];
   for (const { table, column, ddl } of alterations) {
     const exists = await db.columnExists(table, column);

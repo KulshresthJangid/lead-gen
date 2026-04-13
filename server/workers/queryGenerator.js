@@ -1,5 +1,5 @@
-import axios from 'axios';
 import logger from '../utils/logger.js';
+import { callAI } from '../utils/aiClient.js';
 
 const GITHUB_FALLBACK = [
   'remote software engineer SaaS followers:>10',
@@ -28,8 +28,6 @@ const GOOGLE_FALLBACK = [
 ];
 
 export async function generateGitHubQueries(config = {}) {
-  const endpoint = config.ollama_endpoint || 'http://localhost:11434';
-  const model = config.ollama_model || 'mistral';
   const product = (config.product_description || '').trim();
   const icp = (config.icp_description || '').trim();
 
@@ -54,15 +52,8 @@ Output ONLY a valid JSON array of 12 query strings, no explanation, no markdown:
 ["query1","query2","query3",...]`;
 
   try {
-    const res = await axios.post(`${endpoint}/api/generate`, {
-      model,
-      prompt,
-      stream: false,
-      options: { temperature: 0.9, num_predict: 600 },
-    }, { timeout: 30_000 });
-
-    const raw = (res.data?.response || '').trim();
-    const match = raw.match(/\[[\s\S]*?\]/);
+    const { text } = await callAI(prompt, config, { temperature: 0.9, maxTokens: 600, timeout: 30_000 });
+    const match = text.match(/\[([\s\S]*?)\]/);
     if (!match) throw new Error('No JSON array in response');
 
     const queries = JSON.parse(match[0]);
@@ -81,8 +72,6 @@ Output ONLY a valid JSON array of 12 query strings, no explanation, no markdown:
 // Called each pipeline run. Takes existing (manual + previously AI-generated) queries as seeds
 // so it always produces fresh, non-overlapping batches.
 export async function expandQueriesFromSources(config = {}, sources = [], previousAiQueries = []) {
-  const endpoint = config.ollama_endpoint || 'http://localhost:11434';
-  const model    = config.ollama_model    || 'mistral';
   const product  = (config.product_description || '').trim();
   const icp      = (config.icp_description     || '').trim();
 
@@ -120,15 +109,8 @@ Output ONLY a valid JSON array of 10 query strings, no explanation, no markdown:
 ${formatHint}`;
 
     try {
-      const res = await axios.post(`${endpoint}/api/generate`, {
-        model,
-        prompt,
-        stream: false,
-        options: { temperature: 0.95, num_predict: 600 },
-      }, { timeout: 30_000 });
-
-      const raw = (res.data?.response || '').trim();
-      const match = raw.match(/\[[\s\S]*?\]/);
+      const { text } = await callAI(prompt, config, { temperature: 0.95, maxTokens: 600, timeout: 30_000 });
+      const match = text.match(/\[([\s\S]*?)\]/);
       if (!match) throw new Error('No JSON array in response');
       const queries = JSON.parse(match[0]);
       return queries.filter(q => typeof q === 'string' && q.length > 5).slice(0, 12);
@@ -173,8 +155,6 @@ ${formatHint}`;
 }
 
 export async function generateGoogleQueries(config = {}) {
-  const endpoint = config.ollama_endpoint || 'http://localhost:11434';
-  const model = config.ollama_model || 'mistral';
   const product = (config.product_description || '').trim();
   const icp = (config.icp_description || '').trim();
 
@@ -198,15 +178,8 @@ Output ONLY a valid JSON array of 8 query strings, no markdown:
 ["site:linkedin.com/in query1","site:linkedin.com/in query2",...]`;
 
   try {
-    const res = await axios.post(`${endpoint}/api/generate`, {
-      model,
-      prompt,
-      stream: false,
-      options: { temperature: 0.9, num_predict: 400 },
-    }, { timeout: 25_000 });
-
-    const raw = (res.data?.response || '').trim();
-    const match = raw.match(/\[[\s\S]*?\]/);
+    const { text } = await callAI(prompt, config, { temperature: 0.9, maxTokens: 400, timeout: 25_000 });
+    const match = text.match(/\[([\s\S]*?)\]/);
     if (!match) throw new Error('No JSON array in response');
 
     const queries = JSON.parse(match[0]);

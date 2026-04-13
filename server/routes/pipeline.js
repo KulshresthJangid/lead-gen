@@ -1,9 +1,9 @@
 import { Router } from 'express';
-import axios from 'axios';
 import { getDb } from '../db.js';
 import { getState } from '../workers/scheduler.js';
 import { readConfig } from '../utils/config.js';
 import { publishJob } from '../utils/rabbitmq.js';
+import { checkConnectivity } from '../utils/aiClient.js';
 
 const router = Router();
 
@@ -23,11 +23,7 @@ router.get('/status', async (req, res, next) => {
       : `SELECT * FROM pipeline_log WHERE tenant_id = ? ORDER BY started_at DESC LIMIT 10`;
     const history = await db.all(historySql, historyParams);
 
-    let ollamaOnline = false;
-    try {
-      await axios.get(`${config.ollama_endpoint || 'http://localhost:11434'}/api/tags`, { timeout: 3000 });
-      ollamaOnline = true;
-    } catch { ollamaOnline = false; }
+    const { ok: ollamaOnline } = await checkConnectivity(config).catch(() => ({ ok: false }));
 
     const lastRun = history[0] || null;
 

@@ -36,16 +36,31 @@ const campaignSchema = z.object({
 router.get('/', async (req, res) => {
   const db = getDb();
   try {
-    const campaigns = await db.all(
-      `SELECT c.*,
-              (SELECT COUNT(*) FROM leads l WHERE l.campaign_id = c.id AND l.status != 'archived') AS leadCount,
-              (SELECT started_at FROM pipeline_log pl WHERE pl.campaign_id = c.id ORDER BY started_at DESC LIMIT 1) AS lastRunAt,
-              (SELECT status     FROM pipeline_log pl WHERE pl.campaign_id = c.id ORDER BY started_at DESC LIMIT 1) AS lastRunStatus
-       FROM campaigns c
-       WHERE c.tenant_id = ?
-       ORDER BY c.created_at ASC`,
-      [req.tenantId],
-    );
+    // owners and admins see all campaigns; members/viewers only see campaigns they have access to
+    const isPrivileged = ['owner', 'admin'].includes(req.role);
+    const campaigns = isPrivileged
+      ? await db.all(
+          `SELECT c.*,
+                  (SELECT COUNT(*) FROM leads l WHERE l.campaign_id = c.id AND l.status != 'archived') AS leadCount,
+                  (SELECT started_at FROM pipeline_log pl WHERE pl.campaign_id = c.id ORDER BY started_at DESC LIMIT 1) AS lastRunAt,
+                  (SELECT status     FROM pipeline_log pl WHERE pl.campaign_id = c.id ORDER BY started_at DESC LIMIT 1) AS lastRunStatus
+           FROM campaigns c
+           WHERE c.tenant_id = ?
+           ORDER BY c.created_at ASC`,
+          [req.tenantId],
+        )
+      : await db.all(
+          `SELECT c.*,
+                  cm.access AS my_access,
+                  (SELECT COUNT(*) FROM leads l WHERE l.campaign_id = c.id AND l.status != 'archived') AS leadCount,
+                  (SELECT started_at FROM pipeline_log pl WHERE pl.campaign_id = c.id ORDER BY started_at DESC LIMIT 1) AS lastRunAt,
+                  (SELECT status     FROM pipeline_log pl WHERE pl.campaign_id = c.id ORDER BY started_at DESC LIMIT 1) AS lastRunStatus
+           FROM campaigns c
+           JOIN campaign_members cm ON cm.campaign_id = c.id AND cm.user_id = ?
+           WHERE c.tenant_id = ?
+           ORDER BY c.created_at ASC`,
+          [req.userId, req.tenantId],
+        );
     return res.json(campaigns);
   } catch (err) {
     logger.error({ err }, 'GET /campaigns');
@@ -176,6 +191,117 @@ router.post('/:id/trigger', requireRole('owner', 'admin', 'member'), async (req,
   } catch (err) {
     logger.error({ err }, 'POST /campaigns/:id/trigger');
     return res.status(500).json({ error: 'Failed to queue pipeline job' });
+  }
+});
+
+// ── Campaign member access ──────────────────────────────────────────────────
+
+// GET /api/campaigns/:id/members
+router.get('/:id/members', requireRole('owner', 'admin'), async (req, res) => {
+  const db = getDb();
+  try {
+    const campaign = await db.get(
+      'SELECT id FROM campaigns WHERE id = ? AND tenant_id = ?',
+      [req.params.id, req.tenantId],
+    );
+    if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
+
+    const members = await db.all(
+      `SELECT cm.user_id, cm.access, cm.granted_at,
+              u.name, u.email, u.role AS user_role,
+              d.name AS department_name
+       FROM campaign_members cm
+       JOIN users u ON u.id = cm.user_id
+       LEFT JOIN departments d ON d.id = u.department_id
+       WHERE cm.campaign_id = ?
+       ORDER BY u.name ASC`,
+      [req.params.id],
+    );
+    return res.json(members);
+  } catch (err) {
+    logger.error({ err }, 'GET /campaigns/:id/members');
+    return res.status(500).json({ error: 'Failed to fetch campaign members' });
+  }
+});
+
+// POST /api/campaigns/:id/members — grant access to a user or department
+const memberSchema = z.object({
+  user_id:       z.string().uuid().optional(),
+  department_id: z.string().uuid().optional(),
+  access:        z.enum(['viewer', 'editor', 'manager']).default('viewer'),
+}).refine(d => d.user_id || d.department_id, {
+  message: 'Provide user_id or department_id',
+});
+
+router.post('/:id/members', requireRole('owner', 'admin'), async (req, res) => {
+  const parse = memberSchema.safeParse(req.body);
+  if (!parse.success) return res.status(400).json({ error: parse.error.issues });
+
+  const db = getDb();
+  try {
+    const campaign = await db.get(
+      'SELECT id FROM campaigns WHERE id = ? AND tenant_id = ?',
+      [req.params.id, req.tenantId],
+    );
+    if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
+
+    const { user_id, department_id, access } = parse.data;
+
+    if (department_id) {
+      // Grant access to all members of a department
+      const dept = await db.get(
+        'SELECT id FROM departments WHERE id = ? AND tenant_id = ?',
+        [department_id, req.tenantId],
+      );
+      if (!dept) return res.status(404).json({ error: 'Department not found' });
+
+      const deptUsers = await db.all(
+        'SELECT id FROM users WHERE department_id = ? AND tenant_id = ?',
+        [department_id, req.tenantId],
+      );
+      for (const u of deptUsers) {
+        await db.run(
+          `INSERT INTO campaign_members (campaign_id, user_id, access, granted_by, granted_at)
+           VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+           ON CONFLICT(campaign_id, user_id) DO UPDATE SET access = excluded.access`,
+          [req.params.id, u.id, access, req.userId],
+        );
+      }
+      return res.status(201).json({ granted: deptUsers.length, department_id, access });
+    }
+
+    // Single user
+    const targetUser = await db.get(
+      'SELECT id FROM users WHERE id = ? AND tenant_id = ?',
+      [user_id, req.tenantId],
+    );
+    if (!targetUser) return res.status(404).json({ error: 'User not found' });
+
+    await db.run(
+      `INSERT INTO campaign_members (campaign_id, user_id, access, granted_by, granted_at)
+       VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(campaign_id, user_id) DO UPDATE SET access = excluded.access`,
+      [req.params.id, user_id, access, req.userId],
+    );
+    return res.status(201).json({ user_id, campaign_id: req.params.id, access });
+  } catch (err) {
+    logger.error({ err }, 'POST /campaigns/:id/members');
+    return res.status(500).json({ error: 'Failed to grant campaign access' });
+  }
+});
+
+// DELETE /api/campaigns/:id/members/:userId
+router.delete('/:id/members/:userId', requireRole('owner', 'admin'), async (req, res) => {
+  const db = getDb();
+  try {
+    await db.run(
+      'DELETE FROM campaign_members WHERE campaign_id = ? AND user_id = ?',
+      [req.params.id, req.params.userId],
+    );
+    return res.json({ success: true });
+  } catch (err) {
+    logger.error({ err }, 'DELETE /campaigns/:id/members/:userId');
+    return res.status(500).json({ error: 'Failed to revoke campaign access' });
   }
 });
 

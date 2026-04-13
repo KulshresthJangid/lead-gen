@@ -22,6 +22,8 @@ import CampaignFormModal from './components/CampaignFormModal.jsx';
 import apiClient from './api/client.js';
 import { useAuth } from './context/AuthContext.jsx';
 import { ThemeProvider, useTheme } from './context/ThemeContext.jsx';
+import { usePermissions } from './hooks/usePermissions.js';
+import PermissionGate from './components/PermissionGate.jsx';
 import { CampaignProvider } from './context/CampaignContext.jsx';
 import { usePipeline } from './hooks/usePipeline.js';
 import { useSocket } from './hooks/useSocket.js';
@@ -76,15 +78,17 @@ function Sidebar() {
     clearTimeout(timerRef.current);
   }
 
+  const { canAccess } = usePermissions();
+
   const navItems = [
     { to: '/',          icon: LayoutDashboard, label: 'Dashboard',  end: true, badge: newLeadsCount },
     { to: '/campaigns', icon: Layers,          label: 'Campaigns'  },
-    { to: '/analytics', icon: BarChart2,       label: 'Analytics'  },
-    { to: '/outreach',  icon: Send,            label: 'Outreach'   },
-    { to: '/ai-logs',   icon: Bot,             label: 'AI Logs',   pulse: pipelineRunning },
-    { to: '/settings',  icon: Settings,        label: 'Settings'   },
-    { to: '/team',      icon: Users,           label: 'Team'       },
-  ];
+    { to: '/analytics', icon: BarChart2,       label: 'Analytics',  screen: 'analytics'  },
+    { to: '/outreach',  icon: Send,            label: 'Outreach',   screen: 'outreach'   },
+    { to: '/ai-logs',   icon: Bot,             label: 'AI Logs',   pulse: pipelineRunning, screen: 'ai-logs' },
+    { to: '/settings',  icon: Settings,        label: 'Settings',   screen: 'settings'   },
+    { to: '/team',      icon: Users,           label: 'Team',       screen: 'team'       },
+  ].filter(item => !item.screen || canAccess(item.screen));
 
   const initials = user?.name
     ? user.name.split(' ').map((p) => p[0]).join('').toUpperCase().slice(0, 2)
@@ -358,6 +362,13 @@ function ProtectedRoute({ children }) {
   return children;
 }
 
+// ── Role-gated route (redirects to / if no access) ────────────────────────────
+function RoleRoute({ screen, children }) {
+  const { canAccess } = usePermissions();
+  if (!canAccess(screen)) return <Navigate to="/" replace />;
+  return children;
+}
+
 // ── Splash ────────────────────────────────────────────────────────────────────
 function Splash() {
   return (
@@ -416,11 +427,11 @@ function AppRoutes() {
         />
         <Route path="/analytics"  element={<ProtectedRoute><Layout><Analytics /></Layout></ProtectedRoute>} />
         <Route path="/leads/:id"  element={<ProtectedRoute><Layout><LeadDetail /></Layout></ProtectedRoute>} />
-        <Route path="/ai-logs"    element={<ProtectedRoute><Layout><AiLogs /></Layout></ProtectedRoute>} />
-        <Route path="/settings"   element={<ProtectedRoute><Layout><SettingsPage /></Layout></ProtectedRoute>} />
+        <Route path="/ai-logs"    element={<ProtectedRoute><RoleRoute screen="ai-logs"><Layout><AiLogs /></Layout></RoleRoute></ProtectedRoute>} />
+        <Route path="/settings"   element={<ProtectedRoute><RoleRoute screen="settings"><Layout><SettingsPage /></Layout></RoleRoute></ProtectedRoute>} />
         <Route path="/campaigns"  element={<ProtectedRoute><Layout><Campaigns /></Layout></ProtectedRoute>} />
-        <Route path="/team"       element={<ProtectedRoute><Layout><TeamSettings /></Layout></ProtectedRoute>} />
-        <Route path="/outreach"   element={<ProtectedRoute><Layout><Outreach /></Layout></ProtectedRoute>} />
+        <Route path="/team"       element={<ProtectedRoute><RoleRoute screen="team"><Layout><TeamSettings /></Layout></RoleRoute></ProtectedRoute>} />
+        <Route path="/outreach"   element={<ProtectedRoute><RoleRoute screen="outreach"><Layout><Outreach /></Layout></RoleRoute></ProtectedRoute>} />
         <Route path="/about"      element={<ProtectedRoute><Layout><AboutPage /></Layout></ProtectedRoute>} />
         <Route path="*"           element={<Navigate to="/" replace />} />
       </Routes>

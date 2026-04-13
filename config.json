@@ -1,6 +1,10 @@
 {
   "ollama_endpoint": "http://localhost:11434",
   "ollama_model": "mistral",
+  "ai_provider": "ollama",
+  "ai_api_key": "",
+  "ai_model": "",
+  "ai_base_url": "",
   "scraping_interval": "0",
   "daily_lead_target": 2000,
   "product_description": "A technical services provider offering on-demand development and QA support for startups and growing teams. I help companies ship faster by taking ownership of backend, frontend, and full-stack development tasks on a contract or freelance basis, while also providing dedicated QA resources to improve product quality, testing coverage, and release stability. Ideal for teams that are understaffed, scaling quickly, or need reliable execution without long hiring cycles.",

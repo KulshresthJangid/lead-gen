@@ -5,12 +5,17 @@ import { readConfig, writeConfig } from '../utils/config.js';
 import { reschedule } from '../workers/scheduler.js';
 import { getDb } from '../db.js';
 import { requireRole } from '../middleware/requireRole.js';
+import { checkConnectivity } from '../utils/aiClient.js';
 
 const router = Router();
 
 const settingsSchema = z.object({
   ollama_endpoint: z.string().url().optional(),
   ollama_model: z.string().min(1).optional(),
+  ai_provider: z.enum(['ollama', 'openrouter', 'anthropic', 'gemini', 'openai', 'copilot', 'custom']).optional(),
+  ai_api_key: z.string().optional(),
+  ai_model: z.string().optional(),
+  ai_base_url: z.string().optional(),
   scraping_interval: z.enum(['0', '15', '30', '60', '360']).optional(),
   daily_lead_target: z.coerce.number().int().min(0).max(100000).optional(),
   product_description: z.string().max(1000).optional(),
@@ -48,7 +53,19 @@ router.put('/', requireRole('owner', 'admin'), validate(settingsSchema), async (
     next(err);
   }
 });
-
+// ── POST /api/settings/test-ai ─────────────────────────────────────────────────────
+router.post('/test-ai', async (req, res, next) => {
+  try {
+    // Merge saved config with any overrides sent in the request body
+    // (so the user can test unsaved changes without saving first)
+    const saved = await readConfig(req.tenantId);
+    const config = { ...saved, ...req.body };
+    const result = await checkConnectivity(config);
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
 // ── POST /api/setup/complete ───────────────────────────────────────────────────
 router.post('/setup/complete', async (req, res, next) => {
   try {

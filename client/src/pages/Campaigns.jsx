@@ -1,15 +1,164 @@
 import { useState, useEffect } from 'react';
-import { Plus, Pencil, Play, Trash2, Layers } from 'lucide-react';
+import { Plus, Pencil, Play, Trash2, Layers, Users, X, UserPlus } from 'lucide-react';
 import toast from 'react-hot-toast';
 import apiClient from '../api/client.js';
 import { useCampaign } from '../context/CampaignContext.jsx';
 import CampaignFormModal from '../components/CampaignFormModal.jsx';
+import { usePermissions } from '../hooks/usePermissions.js';
+
+// ── Campaign access panel ─────────────────────────────────────────────────────
+function AccessPanel({ campaign, onClose }) {
+  const [members,    setMembers]    = useState([]);
+  const [allUsers,   setAllUsers]   = useState([]);
+  const [departments, setDepts]     = useState([]);
+  const [loading,    setLoading]    = useState(true);
+  const [grantUserId,  setGrantUserId]  = useState('');
+  const [grantDeptId,  setGrantDeptId]  = useState('');
+  const [grantAccess,  setGrantAccess]  = useState('viewer');
+  const [granting,     setGranting]     = useState(false);
+
+  async function fetchData() {
+    try {
+      const [{ data: m }, { data: u }, { data: d }] = await Promise.all([
+        apiClient.get(`/campaigns/${campaign.id}/members`),
+        apiClient.get('/users'),
+        apiClient.get('/departments'),
+      ]);
+      setMembers(m);
+      setAllUsers(u.filter(u => !['owner', 'admin'].includes(u.role)));
+      setDepts(d);
+    } catch {
+      toast.error('Failed to load access data');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { fetchData(); }, [campaign.id]);
+
+  async function handleGrant(e) {
+    e.preventDefault();
+    if (!grantUserId && !grantDeptId) return toast.error('Select a user or department');
+    setGranting(true);
+    try {
+      const body = grantDeptId
+        ? { department_id: grantDeptId, access: grantAccess }
+        : { user_id: grantUserId, access: grantAccess };
+      await apiClient.post(`/campaigns/${campaign.id}/members`, body);
+      toast.success('Access granted');
+      setGrantUserId(''); setGrantDeptId('');
+      fetchData();
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to grant access');
+    } finally {
+      setGranting(false);
+    }
+  }
+
+  async function handleRevoke(userId) {
+    try {
+      await apiClient.delete(`/campaigns/${campaign.id}/members/${userId}`);
+      toast.success('Access revoked');
+      fetchData();
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to revoke access');
+    }
+  }
+
+  const ACCESS_LEVELS = ['viewer', 'editor', 'manager'];
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/50 backdrop-blur-sm" onClick={onClose}>
+      <div
+        className="w-full max-w-md h-full overflow-y-auto flex flex-col"
+        style={{ backgroundColor: 'var(--card)', borderLeft: '1px solid var(--border-md)' }}
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: 'var(--border)' }}>
+          <div>
+            <h2 className="text-sm font-semibold" style={{ color: 'var(--text-1)' }}>Campaign Access</h2>
+            <p className="text-xs mt-0.5" style={{ color: 'var(--text-3)' }}>{campaign.name}</p>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-white/5" style={{ color: 'var(--text-3)' }}>
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-5 flex-1">
+          {/* Grant access form */}
+          <form onSubmit={handleGrant} className="space-y-3">
+            <h3 className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-3)' }}>Grant Access</h3>
+            <select value={grantUserId} onChange={e => { setGrantUserId(e.target.value); setGrantDeptId(''); }}
+              className="w-full rounded-lg px-3 py-2 text-sm border focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              style={{ backgroundColor: 'var(--surface)', borderColor: 'var(--border-md)', color: 'var(--text-1)' }}>
+              <option value="">— Select user —</option>
+              {allUsers.map(u => <option key={u.id} value={u.id}>{u.name || u.email} ({u.role})</option>)}
+            </select>
+            <p className="text-xs text-center" style={{ color: 'var(--text-3)' }}>or grant to entire department</p>
+            <select value={grantDeptId} onChange={e => { setGrantDeptId(e.target.value); setGrantUserId(''); }}
+              className="w-full rounded-lg px-3 py-2 text-sm border focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              style={{ backgroundColor: 'var(--surface)', borderColor: 'var(--border-md)', color: 'var(--text-1)' }}>
+              <option value="">— Select department —</option>
+              {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+            <select value={grantAccess} onChange={e => setGrantAccess(e.target.value)}
+              className="w-full rounded-lg px-3 py-2 text-sm border focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              style={{ backgroundColor: 'var(--surface)', borderColor: 'var(--border-md)', color: 'var(--text-1)' }}>
+              {ACCESS_LEVELS.map(a => <option key={a} value={a}>{a}</option>)}
+            </select>
+            <button type="submit" disabled={granting || (!grantUserId && !grantDeptId)}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white transition-colors">
+              <UserPlus className="w-3.5 h-3.5" />
+              {granting ? 'Granting…' : 'Grant access'}
+            </button>
+          </form>
+
+          {/* Current members */}
+          <div>
+            <h3 className="text-xs font-semibold uppercase tracking-wider mb-3" style={{ color: 'var(--text-3)' }}>
+              Current access ({members.length})
+            </h3>
+            {loading ? (
+              <p className="text-sm text-center py-4" style={{ color: 'var(--text-3)' }}>Loading…</p>
+            ) : members.length === 0 ? (
+              <p className="text-sm text-center py-4" style={{ color: 'var(--text-3)' }}>No explicit access granted — only owners and admins can view this campaign</p>
+            ) : (
+              <ul className="space-y-2">
+                {members.map(m => (
+                  <li key={m.user_id} className="flex items-center justify-between gap-3 rounded-xl p-3"
+                    style={{ backgroundColor: 'var(--surface)' }}>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate" style={{ color: 'var(--text-1)' }}>{m.name || m.email}</p>
+                      <p className="text-xs" style={{ color: 'var(--text-3)' }}>
+                        {m.department_name && <span className="mr-2">{m.department_name}</span>}
+                        <span className="capitalize">{m.access}</span>
+                      </p>
+                    </div>
+                    <button onClick={() => handleRevoke(m.user_id)}
+                      className="p-1.5 rounded-lg border transition-colors hover:bg-red-900/20 flex-shrink-0"
+                      style={{ borderColor: 'var(--border-md)', color: 'var(--text-3)' }} title="Revoke">
+                      <X className="w-3 h-3" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function Campaigns() {
   const { campaigns, currentCampaign, selectCampaign, refetch } = useCampaign();
+  const { hasRole } = usePermissions();
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState(null);
   const [triggering, setTriggering] = useState(null);
+  const [accessCampaign, setAccessCampaign] = useState(null);
+
+  const canManage = hasRole('owner', 'admin');
 
   async function handleTrigger(campaign) {
     setTriggering(campaign.id);
@@ -130,6 +279,16 @@ export default function Campaigns() {
                   >
                     <Pencil className="w-3.5 h-3.5" />
                   </button>
+                  {canManage && (
+                    <button
+                      onClick={() => setAccessCampaign(c)}
+                      className="p-2 rounded-lg border transition-colors hover:bg-indigo-900/20"
+                      style={{ borderColor: 'var(--border-md)', color: 'var(--text-3)' }}
+                      title="Manage access"
+                    >
+                      <Users className="w-3.5 h-3.5" />
+                    </button>
+                  )}
                   <button
                     onClick={() => handleArchive(c)}
                     className="p-2 rounded-lg border transition-colors hover:bg-red-900/20"
@@ -151,6 +310,10 @@ export default function Campaigns() {
           onClose={() => setShowModal(false)}
           onSaved={refetch}
         />
+      )}
+
+      {accessCampaign && (
+        <AccessPanel campaign={accessCampaign} onClose={() => setAccessCampaign(null)} />
       )}
     </div>
   );
