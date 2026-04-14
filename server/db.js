@@ -220,7 +220,7 @@ function createSQLiteInterface(rawDb) {
             tenantId || null,
             campaignId || null,
           );
-          if (res.changes > 0) inserted.push(lead);
+          if (res.changes > 0) inserted.push({ ...lead, id: res.lastInsertRowid });
         }
         return inserted;
       });
@@ -283,7 +283,7 @@ function createPgInterface(pool) {
               lead.status || 'new', tenantId || null, campaignId || null,
             ],
           );
-          if (res.rows.length > 0) inserted.push(lead);
+          if (res.rows.length > 0) inserted.push({ ...lead, id: res.rows[0].id });
         }
         await client.query('COMMIT');
         return inserted;
