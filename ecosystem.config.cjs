@@ -12,7 +12,18 @@ module.exports = {
       interpreter: 'node',
       autorestart: true,
       watch: false,
-      max_memory_restart: '512M',
+      // Was 512M — steady-state memory during an active scrape/enrich
+      // cycle runs ~630-665MB (confirmed from PM2's own restart log), so
+      // the old ceiling was restarting the process roughly every 30
+      // minutes, which happened to match the campaigns' own cron
+      // interval closely enough that it was killing pipeline runs
+      // mid-flight before they could insert a single lead or log
+      // completion — every campaign, every cycle, 0 completed runs.
+      // 1536M gives real headroom above observed usage; server has
+      // 7.7GB free, so this is not tight. Doesn't fix whatever is
+      // actually growing memory each cycle — just stops it from cutting
+      // off every run before it finishes.
+      max_memory_restart: '1536M',
 
       // Production env — activated with --env production
       env_production: {
