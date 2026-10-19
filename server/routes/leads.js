@@ -19,9 +19,9 @@ function buildWhereClause(query, tenantId) {
 
   if (query.campaignId) { conditions.push('campaign_id = ?'); params.push(query.campaignId); }
   if (query.search) {
-    conditions.push('(full_name LIKE ? OR company_name LIKE ? OR email LIKE ?)');
+    conditions.push('(full_name LIKE ? OR company_name LIKE ? OR email LIKE ? OR phone LIKE ?)');
     const s = `%${query.search}%`;
-    params.push(s, s, s);
+    params.push(s, s, s, s);
   }
   if (query.quality)   { conditions.push('lead_quality = ?');    params.push(query.quality); }
   if (query.category)  { conditions.push('manual_category = ?'); params.push(query.category); }

@@ -2,7 +2,7 @@ import { stringify } from 'csv-stringify/sync';
 
 const COLUMNS = [
   'id', 'full_name', 'job_title', 'company_name', 'company_domain',
-  'email', 'linkedin_url', 'location', 'pain_points', 'reason_for_outreach',
+  'email', 'phone', 'linkedin_url', 'location', 'pain_points', 'reason_for_outreach',
   'lead_quality', 'confidence_score', 'manual_category', 'manual_notes',
   'source', 'created_at',
 ];

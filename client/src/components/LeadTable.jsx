@@ -5,7 +5,7 @@ import LeadRow from './LeadRow.jsx';
 const COLUMNS = [
   { key: 'full_name', label: 'Name', sortable: false },
   { key: 'company_name', label: 'Company', sortable: false },
-  { key: 'email', label: 'Email', sortable: false },
+  { key: 'email', label: 'Contact', sortable: false },
   { key: 'lead_quality', label: 'AI Quality', sortable: true },
   { key: 'manual_category', label: 'Category', sortable: false },
   { key: 'confidence_score', label: 'Score', sortable: true },

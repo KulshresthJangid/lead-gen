@@ -10,7 +10,7 @@ const router = Router();
 // Mounted at /api/campaigns — requireAuth applied in index.js
 
 const sourceSchema = z.object({
-  type:  z.enum(['github', 'google', 'gitlab', 'hackernews', 'custom']),
+  type:  z.enum(['github', 'google', 'gitlab', 'hackernews', 'custom', 'businessghana']),
   query: z.string().max(500).optional().default(''),
   url:   z.string().max(1000).optional().default(''),
 });

@@ -56,6 +56,32 @@ function isValidEmail(email) {
   return typeof email === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
+// ── Phone normalization/validation ───────────────────────────────────────────
+// Many markets (confirmed for Ghana's own B2B directories) run on phone
+// contact, not email — a lead schema that only accepts email structurally
+// can't capture a real, legitimate lead from those sources.
+function normalizePhone(raw) {
+  if (typeof raw !== 'string') return '';
+  let trimmed = raw.trim();
+  const hasPlus = trimmed.startsWith('+');
+  // "+233 (0) 302 227 822" style — the (0) trunk prefix is only dialed
+  // domestically; with the country code already present it must be
+  // dropped, or the number ends up with a stray digit (e.g. "+2330302...").
+  if (hasPlus) trimmed = trimmed.replace(/\(0\)/g, '');
+  const digits = trimmed.replace(/\D/g, '');
+  return (hasPlus ? '+' : '') + digits;
+}
+
+function isValidPhone(phone) {
+  if (typeof phone !== 'string' || !phone) return false;
+  const digits = phone.replace(/\D/g, '');
+  // 7-15 digits covers local (e.g. Ghana's 0XXXXXXXXX, 10 digits) through
+  // full E.164 international format — loose on purpose, this is a scraper
+  // pulling numbers off real directory pages, not a strict phone-field
+  // validator.
+  return digits.length >= 7 && digits.length <= 15;
+}
+
 // ── GitHub adapter (uses public API — 60 req/hr unauth, 5000/hr with token) ──
 function githubHeaders() {
   const token = process.env.GITHUB_TOKEN;
@@ -542,6 +568,67 @@ async function scrapeCustomUrl(url, selectors = {}) {
   return leads;
 }
 
+// ── BusinessGhana directory adapter ───────────────────────────────────────────
+// Static, server-rendered, no bot-blocking — verified live before building
+// this (curl'd the real pages, inspected real HTML, not guessed). Returns
+// phone-based leads: this directory's listings carry a phone number per
+// company, never an email — true for most Ghana/West-African B2B directories,
+// which is exactly why phone support was added to the lead schema at all.
+async function scrapeBusinessGhanaDirectory(baseUrl) {
+  const leads = [];
+  const MAX_PAGES = 5; // known total ~117 listings @ 50/page = 3 pages; headroom for growth
+  try {
+    for (let page = 1; page <= MAX_PAGES; page++) {
+      const url = page === 1 ? baseUrl : `${baseUrl}?page=${page}`;
+      let response;
+      try {
+        response = await throttledGet(url);
+      } catch (err) {
+        logger.warn({ url, err: err.message }, '[SCRAPER] BusinessGhana page fetch failed');
+        break;
+      }
+
+      const $ = cheerio.load(response.data);
+      const rows = $('.all-listings-row');
+      if (rows.length === 0) break; // ran past the last page
+
+      rows.each((_, el) => {
+        const name = $(el).find('.listing-title a').first().text().trim();
+        const phoneRaw = $(el).find('.more-row strong').first().text().trim();
+        if (!name || !phoneRaw) return;
+
+        // Listings often show several numbers separated by "/" — take the
+        // first that's actually valid; they're alternates for the same
+        // company, not separate leads.
+        const candidate = phoneRaw
+          .split('/')
+          .map((p) => normalizePhone(p))
+          .find((p) => isValidPhone(p));
+        if (!candidate) return;
+
+        leads.push({
+          full_name: name,
+          job_title: '',
+          company_name: name,
+          company_domain: '',
+          email: '',
+          phone: candidate,
+          linkedin_url: '',
+          location: 'Ghana',
+          source: 'businessghana',
+        });
+      });
+
+      if (rows.length < 50) break; // short page — this was the last one
+    }
+
+    logger.info({ source: 'businessghana', url: baseUrl, found: leads.length }, 'BusinessGhana directory scrape complete');
+  } catch (err) {
+    logger.error({ url: baseUrl, err: err.message }, 'BusinessGhana directory scrape failed');
+  }
+  return leads;
+}
+
 // ── Main entry point ──────────────────────────────────────────────────────────
 /**
  * Scrape all configured targets.
@@ -565,9 +652,10 @@ export async function scrapeLeads(targets = []) {
   const gitlabTargets = targets.filter(
     t => t.type === 'gitlab' || t.url?.includes('gitlab.com'),
   );
+  const businessGhanaTargets = targets.filter(t => t.type === 'businessghana');
   const customTargets = targets.filter(t => {
     if (!t.url) return false;
-    if (['github', 'hackernews', 'google', 'gitlab'].includes(t.type)) return false;
+    if (['github', 'hackernews', 'google', 'gitlab', 'businessghana'].includes(t.type)) return false;
     if (t.url.includes('github.com') || t.url.includes('news.ycombinator.com') || t.url.includes('gitlab.com')) return false;
     return true;
   });
@@ -623,11 +711,24 @@ export async function scrapeLeads(targets = []) {
     allLeads.push(...batch);
   }
 
-  // Deduplicate within this batch (by email)
+  // BusinessGhana directory: each target individually
+  for (const t of businessGhanaTargets) {
+    const batch = await scrapeBusinessGhanaDirectory(t.url);
+    allLeads.push(...batch);
+  }
+
+  // Deduplicate within this batch — by email when present, else by phone.
+  // A lead needs at least one valid contact method to survive at all;
+  // email-only sources (GitHub/HN/Google) are unaffected by this, phone-only
+  // sources (BusinessGhana, future directory adapters) can now get through.
   const seen = new Set();
   const deduped = allLeads.filter((lead) => {
-    if (!isValidEmail(lead.email) || seen.has(lead.email.toLowerCase())) return false;
-    seen.add(lead.email.toLowerCase());
+    const hasEmail = isValidEmail(lead.email);
+    const hasPhone = isValidPhone(lead.phone);
+    if (!hasEmail && !hasPhone) return false;
+    const key = hasEmail ? `email:${lead.email.toLowerCase()}` : `phone:${lead.phone}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
     return true;
   });
 

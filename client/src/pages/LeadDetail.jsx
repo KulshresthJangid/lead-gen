@@ -73,6 +73,11 @@ export default function LeadDetail() {
     navigator.clipboard.writeText(lead.email).then(() => toast.success('Email copied!'));
   }
 
+  function copyPhone() {
+    if (!lead?.phone) return;
+    navigator.clipboard.writeText(lead.phone).then(() => toast.success('Phone copied!'));
+  }
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -129,21 +134,40 @@ export default function LeadDetail() {
               <Field label="Job Title" value={lead.job_title} />
               <Field label="Company" value={lead.company_name} />
               <Field label="Domain" value={lead.company_domain} />
-              <div>
-                <dt className="text-[10px] font-bold uppercase tracking-widest mb-1" style={{ color: 'var(--text-3)' }}>Email</dt>
-                <dd className="mt-1 flex items-center gap-2">
-                  <span className="text-sm font-mono" style={{ color: 'var(--text-1)' }}>{lead.email}</span>
-                  <button
-                    onClick={copyEmail}
-                    className="p-1 rounded transition-colors"
-                    style={{ color: 'var(--text-3)' }}
-                    onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--text-1)'; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-3)'; }}
-                  >
-                    <Copy className="w-3.5 h-3.5" />
-                  </button>
-                </dd>
-              </div>
+              {lead.email && (
+                <div>
+                  <dt className="text-[10px] font-bold uppercase tracking-widest mb-1" style={{ color: 'var(--text-3)' }}>Email</dt>
+                  <dd className="mt-1 flex items-center gap-2">
+                    <span className="text-sm font-mono" style={{ color: 'var(--text-1)' }}>{lead.email}</span>
+                    <button
+                      onClick={copyEmail}
+                      className="p-1 rounded transition-colors"
+                      style={{ color: 'var(--text-3)' }}
+                      onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--text-1)'; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-3)'; }}
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                    </button>
+                  </dd>
+                </div>
+              )}
+              {lead.phone && (
+                <div>
+                  <dt className="text-[10px] font-bold uppercase tracking-widest mb-1" style={{ color: 'var(--text-3)' }}>Phone</dt>
+                  <dd className="mt-1 flex items-center gap-2">
+                    <span className="text-sm font-mono" style={{ color: 'var(--text-1)' }}>{lead.phone}</span>
+                    <button
+                      onClick={copyPhone}
+                      className="p-1 rounded transition-colors"
+                      style={{ color: 'var(--text-3)' }}
+                      onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--text-1)'; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-3)'; }}
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                    </button>
+                  </dd>
+                </div>
+              )}
               <Field label="Location" value={lead.location} />
               {lead.linkedin_url && (
                 <div>

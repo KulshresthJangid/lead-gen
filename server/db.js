@@ -192,10 +192,10 @@ function createSQLiteInterface(rawDb) {
     insertLeads: async (leads, tenantId, campaignId) => {
       const stmt = rawDb.prepare(`
         INSERT OR IGNORE INTO leads
-          (full_name, job_title, company_name, company_domain, email, linkedin_url, location,
+          (full_name, job_title, company_name, company_domain, email, phone, linkedin_url, location,
            pain_points, reason_for_outreach, lead_quality, confidence_score, source, email_hash,
-           enrichment_attempts, enriched_at, status, tenant_id, campaign_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           phone_hash, enrichment_attempts, enriched_at, status, tenant_id, campaign_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       const insertTx = rawDb.transaction((items) => {
         const inserted = [];
@@ -205,7 +205,8 @@ function createSQLiteInterface(rawDb) {
             lead.job_title || '',
             lead.company_name || '',
             lead.company_domain || '',
-            lead.email,
+            lead.email || null,
+            lead.phone || null,
             lead.linkedin_url || '',
             lead.location || '',
             lead.pain_points || '',
@@ -213,7 +214,8 @@ function createSQLiteInterface(rawDb) {
             lead.lead_quality || null,
             lead.confidence_score || null,
             lead.source || '',
-            lead.email_hash,
+            lead.email_hash || null,
+            lead.phone_hash || null,
             lead.enrichment_attempts || 0,
             lead.enriched_at || null,
             lead.status || 'new',
@@ -267,19 +269,24 @@ function createPgInterface(pool) {
         await client.query('BEGIN');
         for (const lead of leads) {
           const res = await client.query(
+            // No conflict target specified — applies to a violation of
+            // *any* unique constraint on the table (email or phone),
+            // matching SQLite's INSERT OR IGNORE semantics now that a
+            // lead can be keyed by either.
             `INSERT INTO leads
-               (full_name, job_title, company_name, company_domain, email, linkedin_url, location,
+               (full_name, job_title, company_name, company_domain, email, phone, linkedin_url, location,
                 pain_points, reason_for_outreach, lead_quality, confidence_score, source, email_hash,
-                enrichment_attempts, enriched_at, status, tenant_id, campaign_id)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
-             ON CONFLICT (email) DO NOTHING
+                phone_hash, enrichment_attempts, enriched_at, status, tenant_id, campaign_id)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+             ON CONFLICT DO NOTHING
              RETURNING id`,
             [
               lead.full_name || '', lead.job_title || '', lead.company_name || '',
-              lead.company_domain || '', lead.email, lead.linkedin_url || '',
-              lead.location || '', lead.pain_points || '', lead.reason_for_outreach || '',
-              lead.lead_quality || null, lead.confidence_score || null, lead.source || '',
-              lead.email_hash, lead.enrichment_attempts || 0, lead.enriched_at || null,
+              lead.company_domain || '', lead.email || null, lead.phone || null,
+              lead.linkedin_url || '', lead.location || '', lead.pain_points || '',
+              lead.reason_for_outreach || '', lead.lead_quality || null,
+              lead.confidence_score || null, lead.source || '', lead.email_hash || null,
+              lead.phone_hash || null, lead.enrichment_attempts || 0, lead.enriched_at || null,
               lead.status || 'new', tenantId || null, campaignId || null,
             ],
           );
@@ -322,6 +329,96 @@ export async function initDb() {
     }
     db = createSQLiteInterface(rawDb);
   }
+
+  // Leads: make email optional and add phone support. Separate from the
+  // alterations[] loop below because relaxing a NOT NULL constraint isn't a
+  // plain ADD COLUMN — Postgres can do it with ALTER COLUMN, but SQLite has
+  // no such statement at all; the standard-and-only way is rebuild the
+  // table (rename old, create new, copy rows, drop old). Guarded on
+  // `phone` not existing yet, so it only ever runs once per database.
+  const hasPhoneColumn = await db.columnExists('leads', 'phone');
+  if (!hasPhoneColumn) {
+    logger.info('[DB] Migrating leads table: email optional, phone added');
+    if (DB_TYPE === 'postgres') {
+      await db.exec(`
+        ALTER TABLE leads ALTER COLUMN email DROP NOT NULL;
+        ALTER TABLE leads ALTER COLUMN email_hash DROP NOT NULL;
+        ALTER TABLE leads ADD COLUMN phone TEXT;
+        ALTER TABLE leads ADD COLUMN phone_hash TEXT;
+        ALTER TABLE leads ADD CONSTRAINT chk_leads_contact CHECK (email IS NOT NULL OR phone IS NOT NULL);
+      `);
+    } else {
+      // SQLite rebuild — same column set as the original CREATE TABLE plus
+      // phone/phone_hash, email/email_hash no longer NOT NULL, UNIQUE
+      // dropped from the inline column defs (both get a real UNIQUE index
+      // below instead, which — unlike an inline UNIQUE column constraint —
+      // plays correctly with NULLs: SQLite never treats two NULLs as equal,
+      // so any number of leads with no email, or no phone, coexist fine).
+      await db.exec(`
+        CREATE TABLE leads_new (
+          id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+          full_name           TEXT NOT NULL,
+          job_title           TEXT,
+          company_name        TEXT,
+          company_domain      TEXT,
+          email               TEXT,
+          phone               TEXT,
+          linkedin_url        TEXT,
+          location            TEXT,
+          pain_points         TEXT,
+          reason_for_outreach TEXT,
+          lead_quality        TEXT CHECK(lead_quality IN ('hot','warm','cold')),
+          confidence_score    INTEGER CHECK(confidence_score BETWEEN 0 AND 100),
+          manual_category     TEXT CHECK(manual_category IN ('hot','warm','cold','disqualified','pending')) DEFAULT 'pending',
+          manual_notes        TEXT,
+          status              TEXT DEFAULT 'new',
+          source              TEXT,
+          enrichment_attempts INTEGER DEFAULT 0,
+          enriched_at         DATETIME,
+          email_hash          TEXT,
+          phone_hash          TEXT,
+          tenant_id           TEXT,
+          campaign_id         TEXT,
+          created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+          CHECK (email IS NOT NULL OR phone IS NOT NULL)
+        );
+        INSERT INTO leads_new
+          (id, full_name, job_title, company_name, company_domain, email, linkedin_url,
+           location, pain_points, reason_for_outreach, lead_quality, confidence_score,
+           manual_category, manual_notes, status, source, enrichment_attempts,
+           enriched_at, email_hash, tenant_id, campaign_id, created_at, updated_at)
+        SELECT
+          id, full_name, job_title, company_name, company_domain, email, linkedin_url,
+          location, pain_points, reason_for_outreach, lead_quality, confidence_score,
+          manual_category, manual_notes, status, source, enrichment_attempts,
+          enriched_at, email_hash, tenant_id, campaign_id, created_at, updated_at
+        FROM leads;
+        DROP TABLE leads;
+        ALTER TABLE leads_new RENAME TO leads;
+      `);
+    }
+    // DROP TABLE leads above also drops every index that pointed at it
+    // (idx_leads_quality/category/domain/created/hash from the MIGRATIONS
+    // array, which already ran earlier this same boot) — recreate them
+    // immediately so there's no gap, rather than waiting for them to come
+    // back on the next restart.
+    await db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_leads_quality   ON leads(lead_quality);
+      CREATE INDEX IF NOT EXISTS idx_leads_category  ON leads(manual_category);
+      CREATE INDEX IF NOT EXISTS idx_leads_domain    ON leads(company_domain);
+      CREATE INDEX IF NOT EXISTS idx_leads_created   ON leads(created_at);
+      CREATE INDEX IF NOT EXISTS idx_leads_hash      ON leads(email_hash);
+    `);
+    logger.info('[DB] leads table migration complete');
+  }
+  // Unique-when-present indexes — replaces the inline UNIQUE column
+  // constraints the original leads table had on email/email_hash (now
+  // dropped since those columns are nullable).
+  await db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_email_unique ON leads(email)');
+  await db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_hash_unique  ON leads(email_hash)');
+  await db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_phone_unique ON leads(phone)');
+  await db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_phone_hash   ON leads(phone_hash)');
 
   // ALTER TABLE: add new columns if they don't exist yet
   const alterations = [

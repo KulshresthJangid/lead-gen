@@ -18,7 +18,7 @@ You are a B2B lead enrichment and qualification engine.${product}${icp}
 
 STRICT RULES:
 - Output ONLY valid JSON. No markdown. No preamble. No code fences.
-- Do NOT invent, hallucinate, or modify: full_name, company_name, email, company_domain. Return them EXACTLY as received.
+- Do NOT invent, hallucinate, or modify: full_name, company_name, email, phone, company_domain. Return them EXACTLY as received.
 - If a field cannot be inferred from available data, return "" (empty string).
 - Enrich ONLY: pain_points, reason_for_outreach, lead_quality (hot|warm|cold), confidence_score (0-100).
 - lead_quality = hot  → strong ICP fit, clear pain point, decision-maker role
@@ -26,7 +26,7 @@ STRICT RULES:
 - lead_quality = cold → poor fit, insufficient data, or clearly out of ICP
 
 OUTPUT FORMAT (strict, no deviations):
-{"leads":[{"full_name":"","job_title":"","company_name":"","company_domain":"","email":"","linkedin_url":"","location":"","pain_points":"","reason_for_outreach":"","lead_quality":"hot|warm|cold","confidence_score":0}]}
+{"leads":[{"full_name":"","job_title":"","company_name":"","company_domain":"","email":"","phone":"","linkedin_url":"","location":"","pain_points":"","reason_for_outreach":"","lead_quality":"hot|warm|cold","confidence_score":0}]}
 [/SYSTEM]`;
 }
 
@@ -241,7 +241,13 @@ export async function enrichBatch(leads, config = {}, io = null, { runId = null,
 
     if (result?.leads && Array.isArray(result.leads)) {
       for (const enrichedLead of result.leads) {
-        const idx = enriched.findIndex((l) => l.email === enrichedLead.email);
+        // Match on email when present, else phone — a batch of phone-only
+        // leads (no email at all) would otherwise all match the same
+        // "l.email === ''" condition and silently overwrite each other.
+        const idx = enriched.findIndex((l) =>
+          (enrichedLead.email && l.email === enrichedLead.email) ||
+          (enrichedLead.phone && l.phone === enrichedLead.phone),
+        );
         if (idx !== -1) {
           enriched[idx] = {
             ...enriched[idx],
@@ -279,7 +285,7 @@ Rules:
 - Under 3 sentences — concise and direct
 - No generic sales language ("synergies", "leverage", "solutions")
 - Return ONLY this JSON (single lead object, NOT an array):
-{"full_name":"","job_title":"","company_name":"","company_domain":"","email":"","linkedin_url":"","location":"","pain_points":"","reason_for_outreach":"","lead_quality":"","confidence_score":0}
+{"full_name":"","job_title":"","company_name":"","company_domain":"","email":"","phone":"","linkedin_url":"","location":"","pain_points":"","reason_for_outreach":"","lead_quality":"","confidence_score":0}
 [/SYSTEM]
 
 Lead:

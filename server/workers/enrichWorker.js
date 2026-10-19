@@ -51,7 +51,8 @@ async function runEnrichBatch(tenantId, campaignId, runId, leadIds) {
   } else {
     leads = await db.all(
       `SELECT * FROM leads WHERE tenant_id = ? AND (enriched_at IS NULL OR enriched_at = '')
-       AND email != '' ORDER BY created_at DESC LIMIT 5`,
+       AND ((email IS NOT NULL AND email != '') OR (phone IS NOT NULL AND phone != ''))
+       ORDER BY created_at DESC LIMIT 5`,
       [tenantId],
     );
   }

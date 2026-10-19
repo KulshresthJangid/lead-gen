@@ -32,13 +32,25 @@ export default function LeadRow({ lead, onCategorize, isNew = false }) {
           )}
         </td>
         <td className="px-4 py-3 text-sm text-gray-700 max-w-[200px]">
-          <a
-            href={`mailto:${lead.email}`}
-            className="hover:underline truncate block"
-            style={{ color: 'var(--text-1)' }}
-          >
-            {lead.email}
-          </a>
+          {lead.email ? (
+            <a
+              href={`mailto:${lead.email}`}
+              className="hover:underline truncate block"
+              style={{ color: 'var(--text-1)' }}
+            >
+              {lead.email}
+            </a>
+          ) : lead.phone ? (
+            <a
+              href={`tel:${lead.phone}`}
+              className="hover:underline truncate block"
+              style={{ color: 'var(--text-1)' }}
+            >
+              {lead.phone}
+            </a>
+          ) : (
+            <span style={{ color: 'var(--text-3)' }}>—</span>
+          )}
         </td>
         <td className="px-4 py-3">
           <CategoryBadge value={lead.lead_quality} type="quality" />
