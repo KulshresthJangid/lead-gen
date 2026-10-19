@@ -12,25 +12,61 @@ function buildRabbitMQUrl() {
 const RABBITMQ_URL = buildRabbitMQUrl();
 export const EXCHANGE = 'leadgen';
 
-let _conn    = null;
-let _channel = null;
+const RECONNECT_DELAY_MS = 5000;
 
-export async function connectRabbitMQ() {
+let _conn         = null;
+let _channel      = null;
+let _reconnecting = false;
+// Re-run after every successful (re)connect, including the first — lets
+// index.js re-subscribe the pipeline/enrich consumers on the new channel.
+// Without this, a dropped connection "heals" publishJob() but the
+// consumers stay bound to the dead channel object forever, since they
+// closed over it directly at boot.
+let _onReconnect  = null;
+
+export function onReconnect(callback) {
+  _onReconnect = callback;
+}
+
+async function connectOnce() {
   _conn    = await amqplib.connect(RABBITMQ_URL);
   _channel = await _conn.createChannel();
   await _channel.assertExchange(EXCHANGE, 'topic', { durable: true });
   logger.info('[RABBITMQ] Connected');
 
   _conn.on('error', (err) => {
+    // 'close' always follows 'error' on the underlying connection, so the
+    // actual state reset + reconnect scheduling happens there, not here.
     logger.error({ err }, '[RABBITMQ] Connection error');
-    _conn = null; _channel = null;
   });
   _conn.on('close', () => {
-    logger.warn('[RABBITMQ] Connection closed');
-    _conn = null; _channel = null;
+    logger.warn('[RABBITMQ] Connection closed — scheduling reconnect');
+    _conn = null;
+    _channel = null;
+    scheduleReconnect();
   });
 
+  if (_onReconnect) await _onReconnect(_channel);
+
   return _channel;
+}
+
+function scheduleReconnect() {
+  if (_reconnecting) return;
+  _reconnecting = true;
+  setTimeout(async () => {
+    _reconnecting = false;
+    try {
+      await connectOnce();
+    } catch (err) {
+      logger.error({ err }, '[RABBITMQ] Reconnect attempt failed');
+      scheduleReconnect();
+    }
+  }, RECONNECT_DELAY_MS);
+}
+
+export async function connectRabbitMQ() {
+  return connectOnce();
 }
 
 export function getChannel() {

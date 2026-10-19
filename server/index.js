@@ -23,7 +23,7 @@ import departmentsRouter from './routes/departments.js';
 import outreachRouter from './routes/outreach.js';
 import { requireAuth } from './middleware/authMiddleware.js';
 import { initScheduler } from './workers/scheduler.js';
-import { connectRabbitMQ } from './utils/rabbitmq.js';
+import { connectRabbitMQ, onReconnect } from './utils/rabbitmq.js';
 import { startPipelineConsumer } from './workers/pipelineWorker.js';
 import { startEnrichConsumer } from './workers/enrichWorker.js';
 import logger from './utils/logger.js';
@@ -85,13 +85,19 @@ async function start() {
   try {
     await initDb();
 
-    // RabbitMQ — optional; server runs without it but pipelines won't queue
-    let rmqChannel = null;
+    // RabbitMQ — optional; server runs without it but pipelines won't queue.
+    // onReconnect re-subscribes both consumers on every (re)connect,
+    // including the first — not just the initial boot — so a connection
+    // dropped later (e.g. the broker restarting) self-heals instead of
+    // leaving publishJob() working again while the consumers stay bound
+    // to the dead channel forever. See rabbitmq.js.
     try {
       const db = (await import('./db.js')).getDb();
-      rmqChannel = await connectRabbitMQ();
-      await startPipelineConsumer(rmqChannel, db);
-      await startEnrichConsumer(rmqChannel);
+      onReconnect(async (channel) => {
+        await startPipelineConsumer(channel, db);
+        await startEnrichConsumer(channel);
+      });
+      await connectRabbitMQ();
     } catch (err) {
       logger.warn({ err: err.message }, '[BOOT] RabbitMQ unavailable — pipeline workers inactive');
     }
