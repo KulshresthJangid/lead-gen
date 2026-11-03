@@ -629,6 +629,65 @@ async function scrapeBusinessGhanaDirectory(baseUrl) {
   return leads;
 }
 
+// ── BusinessList.* directory adapter (generic — same network, many countries) ──
+// businesslist.com.ng, .co.ke, etc. all run the identical template — verified
+// live for both before building this (same discipline as BusinessGhana: curl'd
+// the real pages, inspected real HTML). Path-paginated (/category/x/2, /3, ...),
+// not query-string like BusinessGhana. Phone-only, same reason: the "E-mail"
+// link is a label, not a real mailto — contact reveal is gated, phone isn't.
+async function scrapeBusinessListDirectory(baseUrl) {
+  const leads = [];
+  const MAX_PAGES = 8; // Nigeria ~73 @ 20/page = 4 pages, Kenya ~172 = 9 pages; headroom
+  const trimmed = baseUrl.replace(/\/$/, '');
+  try {
+    for (let page = 1; page <= MAX_PAGES; page++) {
+      const url = page === 1 ? trimmed : `${trimmed}/${page}`;
+      let response;
+      try {
+        response = await throttledGet(url);
+      } catch (err) {
+        logger.warn({ url, err: err.message }, '[SCRAPER] BusinessList page fetch failed');
+        break;
+      }
+
+      const $ = cheerio.load(response.data);
+      const rows = $('.company').filter((_, el) => $(el).find('h3 a').length > 0);
+      if (rows.length === 0) break; // ran past the last page
+
+      rows.each((_, el) => {
+        const name = $(el).find('h3 a').first().text().trim();
+        // Phone sits in a '.s' stat block identified by its phone icon, not
+        // by position — the stat row order isn't guaranteed across listings.
+        const phoneStat = $(el).find('.listing_stats .s').filter((_, s) => $(s).find('.fa-phone').length > 0).first();
+        const phoneRaw = phoneStat.find('span b').first().text().trim();
+        if (!name || !phoneRaw) return;
+
+        const candidate = normalizePhone(phoneRaw);
+        if (!isValidPhone(candidate)) return;
+
+        leads.push({
+          full_name: name,
+          job_title: '',
+          company_name: name,
+          company_domain: '',
+          email: '',
+          phone: candidate,
+          linkedin_url: '',
+          location: $(el).find('.address').first().text().trim(),
+          source: `businesslist:${new URL(baseUrl).hostname}`,
+        });
+      });
+
+      if (rows.length < 20) break; // short page — this was the last one
+    }
+
+    logger.info({ source: 'businesslist', url: baseUrl, found: leads.length }, 'BusinessList directory scrape complete');
+  } catch (err) {
+    logger.error({ url: baseUrl, err: err.message }, 'BusinessList directory scrape failed');
+  }
+  return leads;
+}
+
 // ── Main entry point ──────────────────────────────────────────────────────────
 /**
  * Scrape all configured targets.
@@ -653,9 +712,10 @@ export async function scrapeLeads(targets = []) {
     t => t.type === 'gitlab' || t.url?.includes('gitlab.com'),
   );
   const businessGhanaTargets = targets.filter(t => t.type === 'businessghana');
+  const businessListTargets = targets.filter(t => t.type === 'businesslist');
   const customTargets = targets.filter(t => {
     if (!t.url) return false;
-    if (['github', 'hackernews', 'google', 'gitlab', 'businessghana'].includes(t.type)) return false;
+    if (['github', 'hackernews', 'google', 'gitlab', 'businessghana', 'businesslist'].includes(t.type)) return false;
     if (t.url.includes('github.com') || t.url.includes('news.ycombinator.com') || t.url.includes('gitlab.com')) return false;
     return true;
   });
@@ -714,6 +774,12 @@ export async function scrapeLeads(targets = []) {
   // BusinessGhana directory: each target individually
   for (const t of businessGhanaTargets) {
     const batch = await scrapeBusinessGhanaDirectory(t.url);
+    allLeads.push(...batch);
+  }
+
+  // BusinessList.* directories (Nigeria, Kenya, ...): each target individually
+  for (const t of businessListTargets) {
+    const batch = await scrapeBusinessListDirectory(t.url);
     allLeads.push(...batch);
   }
 
