@@ -60,7 +60,7 @@ router.get('/', async (req, res, next) => {
 router.post('/export', async (req, res, next) => {
   try {
     const db = getDb();
-    const { where, params } = buildWhereClause({ ...req.body, ...(req.body?.campaignId ? {} : {}) }, req.tenantId);
+    const { where, params } = buildWhereClause(req.query, req.tenantId);
     const leads = await db.all(`SELECT * FROM leads ${where} ORDER BY created_at DESC`, params);
     const csv = leadsToCSV(leads);
     const filename = `leads-${new Date().toISOString().split('T')[0]}.csv`;
